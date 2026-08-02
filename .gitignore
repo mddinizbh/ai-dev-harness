@@ -1,0 +1,15 @@
+.omo/
+.superpowers/
+prototypes/descobrir-v1/output/
+prototypes/descobrir-v1/descobrir.config.json
+node_modules/
+
+# Descobrir skill — local store, WAL, config, export artifacts
+skills/descobrir/**/*.sqlite
+skills/descobrir/**/*.sqlite-wal
+skills/descobrir/**/*.sqlite-shm
+skills/descobrir/**/descobrir.config.json
+skills/descobrir/output/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
