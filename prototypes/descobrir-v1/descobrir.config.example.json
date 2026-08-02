@@ -1,0 +1,22 @@
+{
+  "namespace": "nori-cloud",
+  "logical_repo": "nori-cloud",
+  "display_repo": "nori/cloud",
+  "source_revision": "633d3a5d16c165073ede2b2248bae708483f2efe",
+  "resolver": {
+    "nori-cloud": "<ABSOLUTE_PATH_TO_NORI_CLOUD>"
+  },
+  "engine": {
+    "name": "explorer",
+    "profile": "nori-cloud-api",
+    "root": ".claude/explorer"
+  },
+  "output": "./output",
+  "threshold": {
+    "minimum_repository_verified_percentage": 0,
+    "require_schema_valid": true,
+    "require_repeatability_pass": true,
+    "require_mutation_equivalent": true,
+    "require_producer_reconciliation_pass": true
+  }
+}
