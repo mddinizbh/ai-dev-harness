@@ -1,0 +1,19 @@
+# SYNTHETIC FIXTURE — not a real Native Artifact body.
+# Structural shape only; counts kept small for tests.
+version: 1
+last_updated: 2026-01-01T00:00:00Z
+last_commit_sha: 633d3a5d16c165073ede2b2248bae708483f2efe
+repowise_available: false
+repowise_note: "synthetic fixture — no external indexer"
+counts:
+  endpoints: 2
+  consumers: 1
+  producers: 1
+  flows: 1
+  insights: 0
+flows_index:
+  - slug: post-iam-auth-register
+    file: .claude/explorer/flows/post-iam-auth-register.md
+    trigger: "POST /api/v1/iam/auth/register"
+    summary: "Creates tenant and admin, emits async notification event"
+insights_index: []
