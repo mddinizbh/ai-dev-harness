@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Onboarding — Flow Diagram</title>
+<link rel="icon" href="data:,">
+<script>
+  (function () {
+    const saved = localStorage.getItem('theme');
+    const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.classList.toggle('dark', dark);
+  })();
+</script>
+<style>
+  :root {
+    --bg: #FAF9F5; --surface: #FFFFFF; --surface2: #F0EEE6;
+    --ink: #141413; --body: #3D3D3A; --muted: #87867F;
+    --line: #D1CFC5; --line-soft: #E6E3DA;
+    --clay: #D97757; --clay-soft: rgba(217,119,87,0.10);
+    --olive: #788C5D; --olive-soft: rgba(120,140,93,0.12);
+    --gold: #C9A45C; --blue: #5B7E96;
+    --zone: rgba(20,20,19,0.025); --zone-line: #D1CFC5;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html.dark {
+    --bg: #141413; --surface: #1F1F1D; --surface2: #2A2A28;
+    --ink: #FAF9F5; --body: #D1CFC5; --muted: #87867F;
+    --line: #3D3D3A; --line-soft: #2A2A28;
+    --clay: #E48A6E; --clay-soft: rgba(228,138,110,0.14);
+    --olive: #9DB07C; --olive-soft: rgba(157,176,124,0.16);
+    --gold: #D4B36F; --blue: #7FA3BC;
+    --zone: rgba(250,249,245,0.03); --zone-line: #3D3D3A;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--body); font-family: var(--sans);
+    -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  .bar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 20px; border-bottom: 1px solid var(--line-soft); flex: none;
+  }
+  .bar h1 { font-family: var(--serif); font-weight: 500; font-size: 19px; color: var(--ink); letter-spacing: -0.01em; }
+  .bar .sub { font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+  .spacer { flex: 1; }
+  
+  #themeToggle {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer; transition: all .15s ease;
+  }
+  #themeToggle:hover { color: var(--ink); border-color: var(--muted); }
+
+  .stage { flex: 1; position: relative; min-height: 0; }
+  .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* nodes */
+  
+  .node rect { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; rx: 10; }
+  .node .t  { font-family: var(--sans); font-size: 14.5px; font-weight: 600; fill: var(--ink); pointer-events: none; }
+  .node .m  { font-family: var(--mono); font-size: 11px; fill: var(--muted); pointer-events: none; }
+  .node .k  { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; fill: var(--clay); pointer-events: none; }
+  .node .fail { font-family: var(--mono); font-size: 9.5px; fill: var(--clay); pointer-events: none; font-weight: 500; }
+  
+  .node.gate rect { fill: var(--clay-soft); stroke: var(--clay); }
+  .node.store rect { fill: var(--surface2); }
+  .node.do rect { fill: var(--olive-soft); stroke: var(--olive); }
+
+  /* edges */
+  .edge { stroke: var(--muted); stroke-width: 1.6; fill: none; marker-end: url(#a-mut); transition: opacity .2s ease, stroke .2s ease; }
+  .edge.dash { stroke-dasharray: 5 4; stroke: var(--blue); marker-end: url(#a-blue); }
+  .edge.ws { stroke-width: 2; stroke: var(--olive); marker-end: url(#a-olive); }
+  .elbl { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div>
+    <h1>Project Onboarding</h1>
+    <div class="sub">Harness Knowledge Graph Pipeline</div>
+  </div>
+  <div class="spacer"></div>
+  <button id="themeToggle">Tema Escuro/Claro</button>
+</div>
+
+<div class="stage" id="stage">
+<svg viewBox="0 0 1440 850" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Project Onboarding Flow">
+  <defs>
+    <marker id="a-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"/>
+    </marker>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--blue)"/>
+    </marker>
+    <marker id="a-olive" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--olive)"/>
+    </marker>
+  </defs>
+
+  <!-- Edges: Sequential Pipeline -->
+  <path class="edge ws" id="e-p1-p2" d="M 480,187 L 640,187" />
+  <path class="edge ws" id="e-p2-p3" d="M 890,187 L 1050,187" />
+  <path class="edge ws" id="e-p3-p4" d="M 1185,235 L 1185,280" />
+  <path class="edge ws" id="e-p4-p5" d="M 1185,395 L 1185,440" />
+  <path class="edge ws" id="e-p5-p6" d="M 1185,555 L 1185,600" />
+  <path class="edge ws" id="e-p6-p7" d="M 1070,667 L 910,667" />
+  <path class="edge ws" id="e-p7-p8" d="M 660,667 L 500,667" />
+  <path class="edge ws" id="e-p8-gate" d="M 365,620 L 365,580" />
+  <path class="edge ws" id="e-gate-p9" d="M 365,450 L 365,410" />
+
+  <!-- Edges: Graph Contributions -->
+  <path class="edge dash" id="e-graph-p1" d="M 365,235 C 365,280 500,350 560,350" />
+  <path class="edge dash" id="e-graph-p2" d="M 775,235 L 775,290" />
+  <path class="edge dash" id="e-graph-p4" d="M 1070,347 L 990,347" />
+  <path class="edge dash" id="e-graph-p5" d="M 1070,507 L 990,507" />
+  <path class="edge dash" id="e-graph-p7" d="M 775,620 L 775,560" />
+  <path class="edge dash" id="e-graph-p9" d="M 480,347 L 560,347" />
+
+  <!-- Edge Labels -->
+  <text class="elbl" x="560" y="178" text-anchor="middle">inicia namespace</text>
+  <text class="elbl" x="970" y="178" text-anchor="middle">resolve paths</text>
+  <text class="elbl" x="1200" y="260">revisões ok</text>
+  <text class="elbl" x="1200" y="420">fatos extraídos</text>
+  <text class="elbl" x="1200" y="580">semântica + gaps</text>
+  <text class="elbl" x="990" y="658" text-anchor="middle">amostra validada</text>
+  <text class="elbl" x="580" y="658" text-anchor="middle">baseline âncora</text>
+  <text class="elbl" x="350" y="605" text-anchor="end">evidência de query</text>
+  <text class="elbl" x="350" y="435" text-anchor="end">aprovação explícita</text>
+
+  <text class="elbl" x="460" y="325" text-anchor="end">fronteiras</text>
+  <text class="elbl" x="785" y="275">políticas e namespace</text>
+  <text class="elbl" x="1010" y="340" text-anchor="end">records</text>
+  <text class="elbl" x="1010" y="500" text-anchor="end">relações inferidas</text>
+  <text class="elbl" x="785" y="590">publica baseline</text>
+  <text class="elbl" x="510" y="340" text-anchor="middle">ativa incremental</text>
+
+  <!-- Central Knowledge Graph -->
+  <g class="node store" id="graph-node" data-k="graph">
+    <rect x="580" y="310" width="390" height="230"/>
+    <text class="t" x="775" y="350" text-anchor="middle" style="font-size: 19px;">Project Knowledge Graph</text>
+    <text class="m" x="775" y="375" text-anchor="middle">Namespace Isolado • Fonte da Verdade</text>
+    <text class="t" x="775" y="425" text-anchor="middle" style="font-size: 13px;">Project Profile &amp; Policies</text>
+    <text class="t" x="775" y="455" text-anchor="middle" style="font-size: 13px;">Knowledge Records &amp; Evidências</text>
+    <text class="t" x="775" y="485" text-anchor="middle" style="font-size: 13px;">Inventário Canônico &amp; Revisões Âncora</text>
+  </g>
+
+  <!-- P1 -->
+  <g class="node do" id="phase-1" data-k="p1">
+    <rect x="250" y="140" width="230" height="95"/>
+    <text class="k" x="270" y="165">Fase 1</text>
+    <text class="t" x="270" y="185">Registrar fronteira</text>
+    <text class="m" x="270" y="205">Nome lógico &amp; Repos</text>
+    <text class="fail" x="270" y="222">! Conflito de nome trava</text>
+  </g>
+
+  <!-- P2 -->
+  <g class="node do" id="phase-2" data-k="p2">
+    <rect x="660" y="140" width="230" height="95"/>
+    <text class="k" x="680" y="165">Fase 2</text>
+    <text class="t" x="680" y="185">Classificar dados</text>
+    <text class="m" x="680" y="205">Data Boundary Policy</text>
+    <text class="fail" x="680" y="222">! Violação bloqueia avanço</text>
+  </g>
+
+  <!-- P3 -->
+  <g class="node do" id="phase-3" data-k="p3">
+    <rect x="1070" y="140" width="230" height="95"/>
+    <text class="k" x="1090" y="165">Fase 3</text>
+    <text class="t" x="1090" y="185">Resolver fontes</text>
+    <text class="m" x="1090" y="205">Mapear paths locais</text>
+    <text class="fail" x="1090" y="222">! Ausência de repo trava</text>
+  </g>
+
+  <!-- P4 -->
+  <g class="node do" id="phase-4" data-k="p4">
+    <rect x="1070" y="300" width="230" height="95"/>
+    <text class="k" x="1090" y="325">Fase 4</text>
+    <text class="t" x="1090" y="345">Extrair determinístico</text>
+    <text class="m" x="1090" y="365">Fatos de sintaxe e estrutura</text>
+    <text class="fail" x="1090" y="382">! Gap reportado s/ parser</text>
+  </g>
+
+  <!-- P5 -->
+  <g class="node do" id="phase-5" data-k="p5">
+    <rect x="1070" y="460" width="230" height="95"/>
+    <text class="k" x="1090" y="485">Fase 5</text>
+    <text class="t" x="1090" y="505">Enriquecer semântica</text>
+    <text class="m" x="1090" y="525">Inferir responsabilidades</text>
+    <text class="fail" x="1090" y="542">! Contradições geram flag</text>
+  </g>
+
+  <!-- P6 -->
+  <g class="node do" id="phase-6" data-k="p6">
+    <rect x="1070" y="620" width="230" height="95"/>
+    <text class="k" x="1090" y="645">Fase 6</text>
+    <text class="t" x="1090" y="665">Validar evidências</text>
+    <text class="m" x="1090" y="685">Amostrar contra fonte local</text>
+    <text class="fail" x="1090" y="702">! Revisão defasada = stale</text>
+  </g>
+
+  <!-- P7 -->
+  <g class="node do" id="phase-7" data-k="p7">
+    <rect x="660" y="620" width="230" height="95"/>
+    <text class="k" x="680" y="645">Fase 7</text>
+    <text class="t" x="680" y="665">Publicar baseline</text>
+    <text class="m" x="680" y="685">Registrar versão-âncora</text>
+    <text class="fail" x="680" y="702">! Rejeita se &lt; limiar aceitável</text>
+  </g>
+
+  <!-- P8 -->
+  <g class="node do" id="phase-8" data-k="p8">
+    <rect x="250" y="620" width="230" height="95"/>
+    <text class="k" x="270" y="645">Fase 8</text>
+    <text class="t" x="270" y="665">Provar consulta</text>
+    <text class="m" x="270" y="685">Agente smoke test isolado</text>
+    <text class="fail" x="270" y="702">! Falha de query volta a F7</text>
+  </g>
+
+  <!-- Gate -->
+  <g class="node gate" id="human-gate" data-k="gate">
+    <rect x="235" y="450" width="260" height="130"/>
+    <text class="k" x="260" y="480">Human Gate</text>
+    <text class="t" x="260" y="505" style="font-size: 16px;">Aprovação do baseline</text>
+    <text class="m" x="260" y="530">Marley revisa evidências</text>
+    <text class="fail" x="260" y="555">! Cancela ou retorna p/ ajuste</text>
+  </g>
+
+  <!-- P9 -->
+  <g class="node do" id="phase-9" data-k="p9">
+    <rect x="250" y="300" width="230" height="95"/>
+    <text class="k" x="270" y="325">Fase 9</text>
+    <text class="t" x="270" y="345">Ativar incremental</text>
+    <text class="m" x="270" y="365">Freshness base inicializado</text>
+    <text class="fail" x="270" y="382">! Diffs em voo viram stale</text>
+  </g>
+</svg>
+</div>
+
+<script>
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const dark = !document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+});
+
+// Boot assertions requirement
+console.assert(document.getElementById('phase-1'), 'Assertion failed: Missing phase-1');
+console.assert(document.getElementById('phase-2'), 'Assertion failed: Missing phase-2');
+console.assert(document.getElementById('phase-3'), 'Assertion failed: Missing phase-3');
+console.assert(document.getElementById('phase-4'), 'Assertion failed: Missing phase-4');
+console.assert(document.getElementById('phase-5'), 'Assertion failed: Missing phase-5');
+console.assert(document.getElementById('phase-6'), 'Assertion failed: Missing phase-6');
+console.assert(document.getElementById('phase-7'), 'Assertion failed: Missing phase-7');
+console.assert(document.getElementById('phase-8'), 'Assertion failed: Missing phase-8');
+console.assert(document.getElementById('phase-9'), 'Assertion failed: Missing phase-9');
+console.assert(document.getElementById('human-gate'), 'Assertion failed: Missing human-gate');
+console.assert(document.getElementById('graph-node'), 'Assertion failed: Missing graph-node');
+</script>
+</body>
+</html>
