@@ -286,6 +286,9 @@ describe("buildRunDescriptor / validateRunDescriptor", () => {
     assert.equal(requireDirtyName("my file.ts", "t"), "my file.ts");
     assert.equal(requireDirtyName('"my file.ts"', "t"), "my file.ts");
     assert.equal(requireDirtyName("src/my file.ts", "t"), "src/my file.ts");
+    assert.equal(requireDirtyName(".claude/", "t"), ".claude");
+    assert.equal(requireDirtyName("src/main/java/", "t"), "src/main/java");
+    assert.equal(requireDirtyName('".omo/"', "t"), ".omo");
     const parts = buildFixtureParts();
     const d = buildRunDescriptor(
       buildInput(parts, {

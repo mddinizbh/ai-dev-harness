@@ -57,11 +57,13 @@ export function requireSafeRelativePath(value, label) {
   }
   return value;
 }
-/** Git porcelain dirty_names: spaces OK; strip outer quotes; reject abs/drive/NUL/newline/\\ /.|.. */
+/** Git porcelain dirty_names: spaces OK; strip outer quotes; strip trailing / on untracked dirs; reject abs/drive/NUL/newline/\\ /.|.. */
 export function requireDirtyName(value, label) {
   if (typeof value !== "string" || value === "") failShape(`${label} must be a non-empty string`);
   if (value.includes("\0") || value.includes("\n") || value.includes("\r")) failShape(`${label} contains forbidden control character`);
   let s = value.length >= 2 && value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+  // Git status --porcelain marks untracked directories with a trailing slash (e.g. ".claude/").
+  s = s.replace(/\/+$/, "");
   if (s === "") failShape(`${label} is empty after quote strip`);
   if (s.includes("\0") || s.includes("\n") || s.includes("\r")) failShape(`${label} contains forbidden control character`);
   if (s.startsWith("/") || /^[A-Za-z]:[\\/]/.test(s)) failShape(`${label} must not be an absolute or drive path`);

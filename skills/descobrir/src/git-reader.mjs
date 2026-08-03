@@ -406,7 +406,8 @@ export function repositorySnapshot({ cwd, anchorRevision, timeoutMs, gitBin }) {
   const trackedFileCount = countNonEmpty(tracked);
   const status = String(runGit(cwd, ["status", "--porcelain=v1"], { ...opts, encoding: "utf8" }));
   const entries = parsePorcelainStatus(status);
-  const dirtyNames = entries.map((e) => e.path).sort();
+  // Normalize Git's trailing slash on untracked directories so mutation_pre validates.
+  const dirtyNames = entries.map((e) => e.path.replace(/\/+$/, "")).filter((p) => p !== "").sort();
   return {
     anchor_object_present: anchorObjectPresent,
     tracked_file_count: trackedFileCount,
