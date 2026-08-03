@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Descobrir skill CLI — setup | setup-status | persist-candidate | accept | export
+ * Descobrir skill CLI — setup | setup-status | prepare | finalize | persist-candidate | accept | export
  * Zero dependencies. SQLite is canonical; JSON is export-only.
  */
 
@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 
 import { canonicalizeCandidatePackage } from "./src/candidate-package.mjs";
 import { sanitizeErrorMessage } from "./src/errors.mjs";
+import { finalizeRun } from "./src/finalize-run.mjs";
 import {
   getGraphifyToolStatus,
   setupGraphifyTool,
@@ -60,6 +61,21 @@ function requireFlag(name, flags) {
 }
 
 /**
+ * @param {string} name
+ * @param {Record<string, string | boolean>} flags
+ * @returns {number|undefined}
+ */
+function optionalInt(name, flags) {
+  const value = flags[name];
+  if (value === undefined || value === true) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`--${name} must be a positive integer when provided`);
+  }
+  return n;
+}
+
+/**
  * @param {string[]} argv process.argv.slice(2)
  * @returns {Promise<number>} exit code
  */
@@ -67,7 +83,7 @@ export async function main(argv) {
   try {
     if (!Array.isArray(argv) || argv.length === 0) {
       throw new Error(
-        "usage: setup | setup-status | prepare | persist-candidate | accept | export",
+        "usage: setup | setup-status | prepare | finalize | persist-candidate | accept | export",
       );
     }
     const [command, ...rest] = argv;
@@ -144,6 +160,33 @@ export async function main(argv) {
         };
         process.stdout.write(`${JSON.stringify(summary)}\n`);
         return 0;
+      }
+      case "finalize": {
+        const runRoot = requireFlag("run-root", flags);
+        const dbPath = requireFlag("db", flags);
+        const sourceRepoPath = requireFlag("source-repo", flags);
+        const timeoutMs = optionalInt("timeout-ms", flags);
+        const gitBin =
+          typeof flags["git-bin"] === "string" && flags["git-bin"] !== ""
+            ? flags["git-bin"]
+            : undefined;
+        const retainRun = flags["retain-run"] === true;
+        /** @type {object|undefined} */
+        let coverageInputs;
+        if (typeof flags["coverage-input"] === "string" && flags["coverage-input"] !== "") {
+          coverageInputs = JSON.parse(readFileSync(flags["coverage-input"], "utf8"));
+        }
+        const result = finalizeRun({
+          runRoot,
+          dbPath,
+          sourceRepoPath,
+          timeoutMs,
+          gitBin,
+          retainRun,
+          coverageInputs,
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return result.exit_code;
       }
       case "persist-candidate": {
         const dbPath = requireFlag("db", flags);
