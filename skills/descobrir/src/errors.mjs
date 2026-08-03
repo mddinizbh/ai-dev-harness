@@ -53,6 +53,14 @@ export class AcceptanceError extends DescobrirError {
   }
 }
 
+export class InstallConflictError extends DescobrirError {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "InstallConflictError";
+  }
+}
+
 /**
  * Sanitize error text for CLI stderr — strip absolute paths.
  * @param {unknown} err
