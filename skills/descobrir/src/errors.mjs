@@ -61,6 +61,28 @@ export class InstallConflictError extends DescobrirError {
   }
 }
 
+export class GitSourceError extends DescobrirError {
+  /**
+   * @param {string} message
+   * @param {{ cause?: unknown }} [options]
+   */
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = "GitSourceError";
+  }
+}
+
+export class WorktreeError extends DescobrirError {
+  /**
+   * @param {string} message
+   * @param {{ cause?: unknown }} [options]
+   */
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = "WorktreeError";
+  }
+}
+
 /**
  * Sanitize error text for CLI stderr — strip absolute paths.
  * @param {unknown} err
