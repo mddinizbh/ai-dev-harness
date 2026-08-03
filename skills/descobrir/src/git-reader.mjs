@@ -6,20 +6,64 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { GitSourceError } from "./errors.mjs";
 
 export { GitSourceError };
 
 const HEX_RE = /^[a-f0-9]{7,64}$/;
-const FORBIDDEN_SEGMENT_CHARS = ["\\", "%", "?", "#", "@"];
+/** Pathspec magic / shell-like / reserved characters never allowed in relative paths. */
+const FORBIDDEN_PATH_CHARS = [
+  "\\",
+  "%",
+  "?",
+  "#",
+  "@",
+  "*",
+  "[",
+  "]",
+  ":",
+  "(",
+  ")",
+  "!",
+  "'",
+  '"',
+  "`",
+  ";",
+  "|",
+  "&",
+  "$",
+  "<",
+  ">",
+  "{",
+  "}",
+  "~",
+];
 const MAX_BUFFER = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/** @param {string} message */
-function fail(message) {
-  throw new GitSourceError(message);
+export const GIT_TIMEOUT_CODE = "GIT_TIMEOUT";
+export const GIT_EXIT_CODE = "GIT_EXIT";
+
+/**
+ * @param {string} message
+ * @param {{ cause?: unknown, code?: string, status?: number, stderr?: unknown }} [options]
+ */
+function fail(message, options = {}) {
+  const err = new GitSourceError(message, options.cause !== undefined ? { cause: options.cause } : {});
+  if (options.code) /** @type {any} */ (err).code = options.code;
+  if (options.status !== undefined) /** @type {any} */ (err).status = options.status;
+  if (options.stderr !== undefined) /** @type {any} */ (err).stderr = options.stderr;
+  throw err;
+}
+
+/** @param {unknown} err */
+export function isGitTimeoutError(err) {
+  if (!(err instanceof GitSourceError)) return false;
+  if (/** @type {any} */ (err).code === GIT_TIMEOUT_CODE) return true;
+  return /timed out or was killed/i.test(err.message);
 }
 
 /** @param {unknown} value */
@@ -52,6 +96,14 @@ export function validateRelativePath(relativePath) {
   if (relativePath[0] === "/") {
     fail("path must be relative (no leading slash)");
   }
+  if (relativePath.startsWith(":(") || relativePath.includes(":(")) {
+    fail("path contains Git pathspec magic");
+  }
+  for (const ch of FORBIDDEN_PATH_CHARS) {
+    if (relativePath.includes(ch)) {
+      fail(`path contains reserved '${ch}'`);
+    }
+  }
   for (const seg of relativePath.split("/")) {
     if (seg === "") {
       fail("path has empty segment (no '//' or trailing '/')");
@@ -61,11 +113,6 @@ export function validateRelativePath(relativePath) {
     }
     if (/\s/.test(seg)) {
       fail("path contains whitespace");
-    }
-    for (const ch of FORBIDDEN_SEGMENT_CHARS) {
-      if (seg.includes(ch)) {
-        fail(`path contains reserved '${ch}'`);
-      }
     }
   }
 }
@@ -77,7 +124,10 @@ function validateCwd(cwd) {
   }
 }
 
-function minimalEnv() {
+/**
+ * @param {{ gitBin?: string }} [opts]
+ */
+function minimalEnv(opts = {}) {
   return {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     LC_ALL: "C",
@@ -85,22 +135,24 @@ function minimalEnv() {
     GIT_OPTIONAL_LOCKS: "0",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_SYSTEM: "/dev/null",
+    ...(opts.gitBin ? {} : {}),
   };
 }
 
 /**
  * @param {string} cwd
  * @param {string[]} args
- * @param {{ encoding?: 'utf8' | 'buffer', timeoutMs?: number }} [opts]
+ * @param {{ encoding?: 'utf8' | 'buffer', timeoutMs?: number, gitBin?: string }} [opts]
  */
 export function runGit(cwd, args, opts = {}) {
   validateCwd(cwd);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const encoding = opts.encoding === "buffer" ? undefined : (opts.encoding ?? "utf8");
+  const gitBin = typeof opts.gitBin === "string" && opts.gitBin !== "" ? opts.gitBin : "git";
   try {
-    return execFileSync("git", args, {
+    return execFileSync(gitBin, args, {
       cwd,
-      env: minimalEnv(),
+      env: minimalEnv(opts),
       shell: false,
       encoding,
       maxBuffer: MAX_BUFFER,
@@ -108,28 +160,29 @@ export function runGit(cwd, args, opts = {}) {
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err) {
-    const e = /** @type {NodeJS.ErrnoException & { status?: number, killed?: boolean, signal?: string }} */ (
+    const e = /** @type {NodeJS.ErrnoException & { status?: number, killed?: boolean, signal?: string, stderr?: unknown }} */ (
       err
     );
     if (e.killed || e.signal === "SIGTERM" || e.signal === "SIGKILL") {
-      fail(`git timed out or was killed (timeoutMs=${timeoutMs})`);
+      fail(`git timed out or was killed (timeoutMs=${timeoutMs})`, { code: GIT_TIMEOUT_CODE });
     }
     if (e.code === "ENOENT") {
       fail("git binary not found on PATH");
     }
     if (Number.isInteger(e.status) && e.status !== 0) {
-      const wrapped = new GitSourceError(`git ${args[0] ?? ""} failed (exit ${e.status})`);
-      /** @type {any} */ (wrapped).status = e.status;
-      /** @type {any} */ (wrapped).stderr = e.stderr;
-      throw wrapped;
+      fail(`git ${args[0] ?? ""} failed (exit ${e.status})`, {
+        code: GIT_EXIT_CODE,
+        status: e.status,
+        stderr: e.stderr,
+      });
     }
     throw err;
   }
 }
 
 /** @param {unknown} err */
-function isGitFailure(err) {
-  return err instanceof GitSourceError && Number.isInteger(/** @type {any} */ (err).status);
+function isGitExitFailure(err) {
+  return err instanceof GitSourceError && /** @type {any} */ (err).code === GIT_EXIT_CODE;
 }
 
 /**
@@ -162,27 +215,60 @@ export function parsePorcelainStatus(output) {
 }
 
 /**
- * Raw source status for byte-identical pre/post checks (porcelain v2).
  * @param {string} cwd
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number, gitBin?: string }} [opts]
  */
 export function captureSourceStatusV2(cwd, opts = {}) {
   return String(runGit(cwd, ["status", "--porcelain=v2"], opts));
 }
 
 /**
- * Raw worktree registration list for leak detection.
  * @param {string} cwd
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number, gitBin?: string }} [opts]
  */
 export function captureWorktreeList(cwd, opts = {}) {
   return String(runGit(cwd, ["worktree", "list", "--porcelain"], opts));
 }
 
 /**
+ * Canonical absolute path for comparisons (resolves macOS /var → /private/var).
+ * Works even when the leaf path does not exist yet (realpath of parent + basename).
+ * @param {string} p
+ */
+export function canonicalizePath(p) {
+  const abs = resolve(p).replace(/\/+$/, "");
+  try {
+    return realpathSync(abs).replace(/\/+$/, "");
+  } catch {
+    try {
+      return join(realpathSync(dirname(abs)), basename(abs)).replace(/\/+$/, "");
+    } catch {
+      return abs;
+    }
+  }
+}
+
+/**
+ * True when porcelain worktree list mentions an absolute worktree path.
+ * @param {string} listPorcelain
+ * @param {string} worktreePath
+ */
+export function worktreeListMentionsPath(listPorcelain, worktreePath) {
+  if (typeof listPorcelain !== "string" || typeof worktreePath !== "string") return false;
+  const target = canonicalizePath(worktreePath);
+  for (const line of listPorcelain.split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const raw = line.slice("worktree ".length).trim();
+    if (raw === "") continue;
+    if (canonicalizePath(raw) === target) return true;
+  }
+  return false;
+}
+
+/**
  * @param {string} cwd
  * @param {string} revision
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number, gitBin?: string }} [opts]
  */
 function assertCommitPresent(cwd, revision, opts = {}) {
   try {
@@ -191,19 +277,19 @@ function assertCommitPresent(cwd, revision, opts = {}) {
       encoding: "utf8",
     });
   } catch (err) {
-    if (isGitFailure(err) || err instanceof GitSourceError) {
-      fail(`revision object not present: ${revision}`);
+    if (isGitTimeoutError(err)) throw err;
+    if (isGitExitFailure(err) || err instanceof GitSourceError) {
+      fail(`revision object not present: ${revision}`, { cause: err });
     }
     throw err;
   }
 }
 
 /**
- * Reject symlink blobs; confirm path exists as a regular blob at revision.
  * @param {string} cwd
  * @param {string} revision
  * @param {string} path
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number, gitBin?: string }} [opts]
  */
 function assertRegularBlobAtRevision(cwd, revision, path, opts = {}) {
   let listing;
@@ -215,15 +301,15 @@ function assertRegularBlobAtRevision(cwd, revision, path, opts = {}) {
       }),
     ).trim();
   } catch (err) {
-    if (isGitFailure(err) || err instanceof GitSourceError) {
-      fail(`path not present at revision: ${path}`);
+    if (isGitTimeoutError(err)) throw err;
+    if (isGitExitFailure(err) || err instanceof GitSourceError) {
+      fail(`path not present at revision: ${path}`, { cause: err });
     }
     throw err;
   }
   if (listing === "") {
     fail(`path not present at revision: ${path}`);
   }
-  // Prefer the exact path line (ls-tree may return multiple if prefix matches).
   const lines = listing.split("\n").filter((l) => l.endsWith(`\t${path}`) || l.endsWith(` ${path}`));
   const line = lines[0] ?? listing.split("\n")[0];
   const mode = line.slice(0, 6);
@@ -239,15 +325,14 @@ function assertRegularBlobAtRevision(cwd, revision, path, opts = {}) {
 }
 
 /**
- * Read committed file bytes at a pinned revision.
- * @param {{ cwd: string, revision: string, path: string, timeoutMs?: number }} args
+ * @param {{ cwd: string, revision: string, path: string, timeoutMs?: number, gitBin?: string }} args
  * @returns {Buffer}
  */
-export function readAtRevision({ cwd, revision, path, timeoutMs }) {
+export function readAtRevision({ cwd, revision, path, timeoutMs, gitBin }) {
   validateCwd(cwd);
   validateRevision(revision);
   validateRelativePath(path);
-  const opts = { timeoutMs };
+  const opts = { timeoutMs, gitBin };
   assertCommitPresent(cwd, revision, opts);
   assertRegularBlobAtRevision(cwd, revision, path, opts);
   try {
@@ -257,23 +342,23 @@ export function readAtRevision({ cwd, revision, path, timeoutMs }) {
     });
     return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   } catch (err) {
+    if (isGitTimeoutError(err)) throw err;
     if (err instanceof GitSourceError) {
-      fail(`git show failed for ${revision}:${path}`);
+      fail(`git show failed for ${revision}:${path}`, { cause: err });
     }
     throw err;
   }
 }
 
 /**
- * Bound reader matching repo-verifier / candidate-package injection shape.
  * @param {string} cwd
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number, gitBin?: string }} [opts]
  * @returns {(args: { revision: string, path: string }) => Buffer}
  */
 export function bindReadAtRevision(cwd, opts = {}) {
   validateCwd(cwd);
   return ({ revision, path }) =>
-    readAtRevision({ cwd, revision, path, timeoutMs: opts.timeoutMs });
+    readAtRevision({ cwd, revision, path, timeoutMs: opts.timeoutMs, gitBin: opts.gitBin });
 }
 
 /** @param {string} text */
@@ -300,17 +385,17 @@ function summaryHash(anchorObjectPresent, trackedFileCount, dirtyNames) {
 }
 
 /**
- * Deterministic mutation-relevant snapshot (names/counts only — never contents).
- * @param {{ cwd: string, anchorRevision: string, timeoutMs?: number }} args
+ * @param {{ cwd: string, anchorRevision: string, timeoutMs?: number, gitBin?: string }} args
  */
-export function repositorySnapshot({ cwd, anchorRevision, timeoutMs }) {
+export function repositorySnapshot({ cwd, anchorRevision, timeoutMs, gitBin }) {
   validateCwd(cwd);
   validateRevision(anchorRevision);
-  const opts = { timeoutMs };
+  const opts = { timeoutMs, gitBin };
   let anchorObjectPresent = true;
   try {
     assertCommitPresent(cwd, anchorRevision, opts);
   } catch (err) {
+    if (isGitTimeoutError(err)) throw err;
     if (err instanceof GitSourceError) {
       anchorObjectPresent = false;
     } else {

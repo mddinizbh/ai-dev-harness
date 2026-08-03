@@ -17,6 +17,7 @@ import {
   validateRelativePath,
   validateRevision,
 } from "../src/git-reader.mjs";
+import { installFakeGit } from "./fake-git.mjs";
 
 const temps = [];
 
@@ -94,6 +95,37 @@ describe("validateRelativePath", () => {
     assert.throws(() => validateRelativePath("a//b"), GitSourceError);
     assert.throws(() => validateRelativePath("a@b"), GitSourceError);
     assert.throws(() => validateRelativePath(""), GitSourceError);
+  });
+
+  test("rejects Git pathspec magic and shell-like metacharacters", () => {
+    const magic = [
+      ":(exclude)secret.go",
+      "src/*.go",
+      "src/foo[bar].go",
+      "src/foo?.go",
+      "a:(b",
+      "x;y",
+      "x|y",
+      "x&y",
+      "x$USER",
+      "x`id`",
+      "x$(id)",
+      "a'b",
+      'a"b',
+      "a<b",
+      "a>b",
+      "a{b}",
+      "a!b",
+    ];
+    for (const p of magic) {
+      assert.throws(() => validateRelativePath(p), GitSourceError, p);
+    }
+  });
+
+  test("still accepts legitimate repository-relative paths", () => {
+    assert.doesNotThrow(() => validateRelativePath("domains/iam/controller/service_register.go"));
+    assert.doesNotThrow(() => validateRelativePath("src/foo-bar_baz.v2.ts"));
+    assert.doesNotThrow(() => validateRelativePath("README.md"));
   });
 });
 
@@ -205,6 +237,44 @@ describe("readAtRevision", () => {
     assert.throws(
       () => readAtRevision({ cwd, revision: head, path: "link.txt" }),
       (err) => err instanceof GitSourceError && /symlink/i.test(err.message),
+    );
+  });
+
+  test("preserves timeout diagnostic — does not rewrite as revision not present", () => {
+    const fake = installFakeGit({ hangOn: ["rev-parse"] });
+    temps.push(fake.dir);
+    assert.throws(
+      () =>
+        readAtRevision({
+          cwd: fixture.cwd,
+          revision: fixture.head,
+          path: "keep.txt",
+          timeoutMs: 200,
+          gitBin: fake.gitBin,
+        }),
+      (err) =>
+        err instanceof GitSourceError &&
+        /timed out|killed/i.test(err.message) &&
+        !/not present/i.test(err.message),
+    );
+  });
+});
+
+describe("repositorySnapshot timeout classification", () => {
+  test("does not treat hung rev-parse as missing anchor", () => {
+    const fake = installFakeGit({ hangOn: ["rev-parse"] });
+    temps.push(fake.dir);
+    assert.throws(
+      () =>
+        repositorySnapshot({
+          cwd: fixture.cwd,
+          anchorRevision: fixture.head,
+          timeoutMs: 200,
+          gitBin: fake.gitBin,
+        }),
+      (err) =>
+        err instanceof GitSourceError &&
+        /timed out|killed/i.test(err.message),
     );
   });
 });
