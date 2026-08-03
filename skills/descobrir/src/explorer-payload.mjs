@@ -9,7 +9,12 @@
  */
 
 import { ExplorerPayloadError } from "./errors.mjs";
-import { blocker, collectPayloadBlockers, isPlainObject } from "./explorer-payload-shape.mjs";
+import {
+  blocker,
+  collectPayloadBlockers,
+  compareCodeUnits,
+  isPlainObject,
+} from "./explorer-payload-shape.mjs";
 import { stableStringify } from "./stable-json.mjs";
 
 export { ExplorerPayloadError };
@@ -137,7 +142,7 @@ function buildRecords(accepted, blockers) {
       name: fields.name,
       summary: fields.summary,
       attributes: fields.attributes,
-      node_keys: [...group.nodeKeys].sort(),
+      node_keys: [...group.nodeKeys].sort(compareCodeUnits),
     });
   }
   return records;
@@ -198,7 +203,7 @@ function buildRelations(accepted, records, blockers) {
       from_natural_key: group.from_natural_key,
       to_type: group.to_type,
       to_natural_key: group.to_natural_key,
-      edge_keys: [...group.edgeKeys].sort(),
+      edge_keys: [...group.edgeKeys].sort(compareCodeUnits),
     });
   }
   return relations;
@@ -209,7 +214,7 @@ function buildRelations(accepted, records, blockers) {
  * @param {{ type: string, natural_key: string }} b
  */
 function byRecordKey(a, b) {
-  return a.type.localeCompare(b.type) || a.natural_key.localeCompare(b.natural_key);
+  return compareCodeUnits(a.type, b.type) || compareCodeUnits(a.natural_key, b.natural_key);
 }
 
 /**
@@ -218,11 +223,11 @@ function byRecordKey(a, b) {
  */
 function byRelationKey(a, b) {
   return (
-    a.relation_type.localeCompare(b.relation_type) ||
-    a.from_type.localeCompare(b.from_type) ||
-    a.from_natural_key.localeCompare(b.from_natural_key) ||
-    a.to_type.localeCompare(b.to_type) ||
-    a.to_natural_key.localeCompare(b.to_natural_key)
+    compareCodeUnits(a.relation_type, b.relation_type) ||
+    compareCodeUnits(a.from_type, b.from_type) ||
+    compareCodeUnits(a.from_natural_key, b.from_natural_key) ||
+    compareCodeUnits(a.to_type, b.to_type) ||
+    compareCodeUnits(a.to_natural_key, b.to_natural_key)
   );
 }
 
@@ -241,9 +246,9 @@ function sortBlockers(blockers) {
   }
   return unique.sort(
     (a, b) =>
-      a.code.localeCompare(b.code) ||
-      a.chunk_keys.join(",").localeCompare(b.chunk_keys.join(",")) ||
-      a.detail.localeCompare(b.detail),
+      compareCodeUnits(a.code, b.code) ||
+      compareCodeUnits(a.chunk_keys.join(","), b.chunk_keys.join(",")) ||
+      compareCodeUnits(a.detail, b.detail),
   );
 }
 
@@ -288,7 +293,7 @@ export function mergeExplorerPayloads(input) {
   };
   const retryable_chunk_keys = [
     ...new Set(sorted.filter((b) => b.retryable).flatMap((b) => b.chunk_keys)),
-  ].sort();
+  ].sort(compareCodeUnits);
 
   return { ok: sorted.length === 0, merged, blockers: sorted, retryable_chunk_keys };
 }

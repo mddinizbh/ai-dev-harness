@@ -2,6 +2,10 @@
  * Explorer payload shape: field allow-lists, authority/injection guards, and
  * per-payload blocker collection. The Explorer is untrusted and stochastic, so
  * every violation becomes a deterministic blocker object instead of trusted data.
+ *
+ * Ordering is locale-independent everywhere: all string comparisons use
+ * `compareCodeUnits` (UTF-16 code-unit order), never `localeCompare`, so output
+ * bytes never depend on the ambient collation of the host environment.
  */
 
 import { validateExplorerPayloadSchema } from "./schema/explorer-payload.mjs";
@@ -63,6 +67,16 @@ const SHA256_RE = /^[a-f0-9]{64}$/;
 const CONTROL_RE = /[\u0000-\u001f]/;
 
 /**
+ * Deterministic, locale-independent lexical comparison by UTF-16 code unit.
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareCodeUnits(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
  * @param {unknown} value
  * @returns {value is Record<string, unknown>}
  */
@@ -77,7 +91,7 @@ export function isPlainObject(value) {
  * @param {boolean} retryable
  */
 export function blocker(code, chunkKeys, detail, retryable) {
-  return { code, chunk_keys: [...chunkKeys].sort(), detail, retryable };
+  return { code, chunk_keys: [...chunkKeys].sort(compareCodeUnits), detail, retryable };
 }
 
 /**
@@ -103,16 +117,20 @@ export function authorityShape(value) {
  * @param {Record<string, unknown>} obj
  * @param {Set<string>} allowed
  * @param {string} label
+ * @param {string} basePath
  * @param {string[]} scope
  * @param {boolean} retryable
  * @param {object[]} out
+ * @param {Set<string>} flagged
  */
-function scanKeys(obj, allowed, label, scope, retryable, out) {
-  for (const key of Object.keys(obj).sort()) {
+function scanKeys(obj, allowed, label, basePath, scope, retryable, out, flagged) {
+  for (const key of Object.keys(obj).sort(compareCodeUnits)) {
     if (BANNED_AUTHORITY.has(key)) {
       out.push(blocker("banned_field", scope, `${label}: authority field '${key}' is not allowed`, retryable));
+      flagged.add(`${basePath}/${key}`);
     } else if (!allowed.has(key)) {
       out.push(blocker("unknown_field", scope, `${label}: unknown field '${key}'`, retryable));
+      flagged.add(`${basePath}/${key}`);
     }
   }
 }
@@ -120,27 +138,32 @@ function scanKeys(obj, allowed, label, scope, retryable, out) {
 /**
  * @param {Record<string, unknown>} value
  * @param {string} label
+ * @param {string} basePath
  * @param {string[]} scope
  * @param {boolean} retryable
  * @param {object[]} out
+ * @param {Set<string>} flagged
  */
-function scanAttributes(value, label, scope, retryable, out) {
+function scanAttributes(value, label, basePath, scope, retryable, out, flagged) {
   if (!isPlainObject(value)) {
     out.push(blocker("invalid_shape", scope, `${label}.attributes must be an object`, retryable));
+    flagged.add(`${basePath}/attributes`);
     return;
   }
   const keys = Object.keys(value);
   if (keys.length > MAX_ATTRIBUTES) {
     out.push(blocker("invalid_shape", scope, `${label}.attributes exceeds ${MAX_ATTRIBUTES} entries`, retryable));
   }
-  for (const key of keys.sort()) {
+  for (const key of keys.sort(compareCodeUnits)) {
     if (BANNED_AUTHORITY.has(key)) {
       out.push(blocker("banned_field", scope, `${label}.attributes: authority field '${key}' is not allowed`, retryable));
+      flagged.add(`${basePath}/attributes/${key}`);
       continue;
     }
     const reason = authorityShape(value[key]);
     if (reason !== null) {
       out.push(blocker("banned_field", scope, `${label}.attributes.${key} looks like ${reason}`, retryable));
+      flagged.add(`${basePath}/attributes/${key}`);
     }
   }
 }
@@ -150,20 +173,31 @@ function scanAttributes(value, label, scope, retryable, out) {
  * @param {Record<string, unknown>} item
  * @param {Set<string>} allowed
  * @param {string} label
+ * @param {string} basePath
  * @param {string[]} scope
  * @param {boolean} retryable
  * @param {object[]} out
+ * @param {Set<string>} flagged
  */
-function scanValues(item, allowed, label, scope, retryable, out) {
-  for (const key of Object.keys(item).sort()) {
+function scanValues(item, allowed, label, basePath, scope, retryable, out, flagged) {
+  for (const key of Object.keys(item).sort(compareCodeUnits)) {
     if (!allowed.has(key) || BANNED_AUTHORITY.has(key)) continue;
     if (key === "attributes") {
-      scanAttributes(/** @type {Record<string, unknown>} */ (item[key]), label, scope, retryable, out);
+      scanAttributes(
+        /** @type {Record<string, unknown>} */ (item[key]),
+        label,
+        basePath,
+        scope,
+        retryable,
+        out,
+        flagged,
+      );
       continue;
     }
     const reason = authorityShape(item[key]);
     if (reason !== null) {
       out.push(blocker("banned_field", scope, `${label}.${key} looks like ${reason}`, retryable));
+      flagged.add(`${basePath}/${key}`);
     }
   }
 }
@@ -172,28 +206,51 @@ function scanValues(item, allowed, label, scope, retryable, out) {
  * @param {unknown} items
  * @param {string} label
  * @param {Set<string>} allowed
+ * @param {string} baseKey
  * @param {string[]} scope
  * @param {boolean} retryable
  * @param {object[]} out
+ * @param {Set<string>} flagged
  */
-function scanEntities(items, label, allowed, scope, retryable, out) {
+function scanEntities(items, label, allowed, baseKey, scope, retryable, out, flagged) {
   if (items === undefined) return;
   if (!Array.isArray(items)) {
     out.push(blocker("invalid_shape", scope, `${label}s must be an array`, retryable));
+    flagged.add(`/${baseKey}`);
     return;
   }
-  for (const item of items) {
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const basePath = `/${baseKey}/${index}`;
     if (!isPlainObject(item)) {
       out.push(blocker("invalid_shape", scope, `${label} must be an object`, retryable));
+      flagged.add(basePath);
       continue;
     }
-    scanKeys(item, allowed, label, scope, retryable, out);
-    scanValues(item, allowed, label, scope, retryable, out);
+    scanKeys(item, allowed, label, basePath, scope, retryable, out, flagged);
+    scanValues(item, allowed, label, basePath, scope, retryable, out, flagged);
   }
 }
 
 /**
- * Validate one untrusted Explorer payload into deterministic blockers.
+ * @param {string} errPath
+ * @param {Set<string>} flagged
+ * @returns {boolean}
+ */
+function pathAlreadyFlagged(errPath, flagged) {
+  if (flagged.has(errPath)) return true;
+  for (const f of flagged) {
+    if (errPath.startsWith(`${f}/`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Validate one untrusted Explorer payload into deterministic blockers. The
+ * imperative scan (authority fields, value smuggle) is always combined with the
+ * closed-schema backstop (structure, types, patterns, nested non-scalars) so a
+ * payload can surface an authority field and a nested non-scalar at once. Schema
+ * errors already covered imperatively are suppressed to avoid double reporting.
  * @param {unknown} payload
  * @returns {Array<{ code: string, chunk_keys: string[], detail: string, retryable: boolean }>}
  */
@@ -205,19 +262,25 @@ export function collectPayloadBlockers(payload) {
   const scope = chunkKey === null ? [] : [chunkKey];
   const retryable = chunkKey !== null;
   const out = [];
+  /** @type {Set<string>} */
+  const flagged = new Set();
 
-  scanKeys(payload, PAYLOAD_KEYS, "payload", scope, retryable, out);
+  scanKeys(payload, PAYLOAD_KEYS, "payload", "", scope, retryable, out, flagged);
   if (chunkKey === null) {
     out.push(blocker("invalid_shape", scope, "payload.chunk_key must be a non-empty string", false));
+    flagged.add("/chunk_key");
   } else if (authorityShape(chunkKey) !== null) {
     out.push(blocker("banned_field", scope, "payload.chunk_key looks like a path or hash", false));
+    flagged.add("/chunk_key");
   }
-  scanEntities(payload.records, "record", RECORD_KEYS, scope, retryable, out);
-  scanEntities(payload.relations, "relation", RELATION_KEYS, scope, retryable, out);
+  scanEntities(payload.records, "record", RECORD_KEYS, "records", scope, retryable, out, flagged);
+  scanEntities(payload.relations, "relation", RELATION_KEYS, "relations", scope, retryable, out, flagged);
 
-  // Closed-schema backstop: reject anything the imperative scan missed.
-  if (out.length === 0 && !validateExplorerPayloadSchema(payload).valid) {
-    out.push(blocker("invalid_shape", scope, "payload violates the closed schema", retryable));
+  // Always combine the closed-schema backstop; skip paths already flagged so a
+  // banned authority field and a nested non-scalar attribute both surface.
+  for (const err of validateExplorerPayloadSchema(payload).errors) {
+    if (pathAlreadyFlagged(err.path, flagged)) continue;
+    out.push(blocker("invalid_shape", scope, `schema ${err.path || "/"}: ${err.message}`, retryable));
   }
   return out;
 }

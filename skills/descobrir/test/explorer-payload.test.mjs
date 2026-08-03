@@ -9,6 +9,8 @@
  * Expected outputs below are worked literals, independent of implementation.
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 
 import { stablePretty } from "../src/stable-json.mjs";
@@ -360,6 +362,80 @@ describe("mergeExplorerPayloads call-contract guards", () => {
     assert.throws(
       () => mergeExplorerPayloads({ payloads: [], chunkKeys: [1, 2] }),
       ExplorerPayloadError,
+    );
+  });
+});
+
+describe("mergeExplorerPayloads locale-independent determinism", () => {
+  const mergeUrl = new URL("../src/explorer-payload.mjs", import.meta.url).href;
+  const stableUrl = new URL("../src/stable-json.mjs", import.meta.url).href;
+
+  // Schema-legal Unicode types whose Swedish collation order differs from
+  // code-unit order: ä (U+00E4) < å (U+00E5) by code unit, but Swedish sorts
+  // z < å < ä. A locale-dependent comparator reorders records across locales.
+  const digestScript = (order) => `
+    import { mergeExplorerPayloads } from ${JSON.stringify(mergeUrl)};
+    import { stablePretty } from ${JSON.stringify(stableUrl)};
+    import { createHash } from "node:crypto";
+    const rec = (t, n) => ({ node_key: n, type: t, natural_key: "k", name: "N", summary: "", attributes: {} });
+    const pool = {
+      a: { chunk_key: "c1", records: [rec("zebra", "n1")], relations: [] },
+      b: { chunk_key: "c2", records: [rec("\\u00e4tare", "n2")], relations: [] },
+      c: { chunk_key: "c3", records: [rec("\\u00e5ra", "n3")], relations: [] },
+    };
+    const payloads = ${JSON.stringify(order)}.map((k) => pool[k]);
+    const result = mergeExplorerPayloads({ payloads, chunkKeys: ["c1", "c2", "c3"] });
+    process.stdout.write(createHash("sha256").update(stablePretty(result), "utf8").digest("hex"));
+  `;
+
+  function digestUnder(order, locale) {
+    return execFileSync(process.execPath, ["--input-type=module", "-e", digestScript(order)], {
+      env: { ...process.env, LC_ALL: locale, LANG: locale },
+      encoding: "utf8",
+    });
+  }
+
+  test("merged digest is byte-identical across C and sv_SE for every permutation", () => {
+    const permutations = [
+      ["a", "b", "c"],
+      ["c", "b", "a"],
+      ["b", "a", "c"],
+    ];
+    const digests = new Set();
+    for (const order of permutations) {
+      for (const locale of ["C", "sv_SE.UTF-8"]) {
+        digests.add(digestUnder(order, locale));
+      }
+    }
+    assert.equal(digests.size, 1, `expected one digest across locales/permutations, got ${digests.size}`);
+  });
+
+  test("record ordering follows code units, not ambient collation", () => {
+    // zebra (z U+007A) < ätare (ä U+00E4) < åra (å U+00E5) by code unit.
+    const result = mergeExplorerPayloads({
+      payloads: [
+        payload("c1", [rec({ node_key: "n1", type: "zebra" })]),
+        payload("c2", [rec({ node_key: "n2", type: "ätare" })]),
+        payload("c3", [rec({ node_key: "n3", type: "åra" })]),
+      ],
+      chunkKeys: ["c1", "c2", "c3"],
+    });
+    assert.deepEqual(result.merged.records.map((r) => r.type), ["zebra", "ätare", "åra"]);
+  });
+});
+
+describe("validateExplorerPayload combines imperative and schema findings", () => {
+  test("reports both a banned authority field and a nested non-scalar attribute", () => {
+    const blockers = validateExplorerPayload(
+      payload("c1", [rec({ confidence: "high", attributes: { nested: { deep: 1 } } })]),
+    );
+    assert.ok(
+      blockers.some((b) => b.code === "banned_field" && /confidence/.test(b.detail)),
+      "expected a banned_field blocker for confidence",
+    );
+    assert.ok(
+      blockers.some((b) => b.code === "invalid_shape" && /attributes\/nested/.test(b.detail)),
+      "expected an invalid_shape blocker for the nested non-scalar attribute",
     );
   });
 });
