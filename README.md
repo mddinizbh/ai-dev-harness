@@ -34,40 +34,80 @@ Onboarding primeiro garante que os outros workflows trabalhem com evidência rea
 
 ## Descobrir
 
-Descobrir indexa conhecimento verificável e prepara um **baseline candidate**. Os schemas em `workflows/descobrir/contracts/` são a fonte de verdade do contrato de dados.
+Descobrir indexa conhecimento verificável e prepara um **baseline candidate**.
+Os schemas em `workflows/descobrir/contracts/` são a fonte de verdade do
+contrato de dados. A skill de produção é **operacional** (ADR 0005 + ADR 0006):
+Graphify + Explorer + guardrails + SQLite + (opcional) projeção Obsidian.
 
 **Status atual:**
 
 | Gate / artefato | Estado |
 |---|---|
 | Gate A (contrato) | Aprovado por Marley em 2026-08-02 |
-| Protótipo descartável `prototypes/descobrir-v1/` | Existe; evidência Gate C coletada (ver `GATE-C.md`) — **não** é runtime de produção |
-| Skill de produção `skills/descobrir/` | Ativa — Explorer + guardrails + SQLite document store (ADR 0005) |
-| Human Gate (baseline aceito) | Explícito; nunca auto-accept |
+| Protótipo descartável `prototypes/descobrir-v1/` | Existe — **não** é runtime de produção |
+| Skill de produção `skills/descobrir/` | **L0 operacional entregue** (install, setup, prepare, protocol, finalize, accept, project-obsidian, status, cleanup, E2E fake) |
+| Human Gate (baseline aceito) | Explícito; **nunca** auto-accept |
+| L1/L2 / Neo4j / Docker | **Deferred** |
 
-A skill project-local:
+### Escopo L0 vs deferred
 
-- Orienta o LLM Explorer a ler saída **isolada** do Graphify (`graph.json` em cópia/worktree efêmera — path B; nunca muta o repo-fonte).
-- Emite um draft com contrato exato; guardrails validam/canonicalizam (IDs recomputados; campos como `confidence` rejeitados).
-- Persiste candidates em SQLite (`node:sqlite`); JSON é só export/auditoria.
-- Aceita baseline somente com `coverage_report.passed === true` e identidade de aprovador.
+| Item | Estado |
+|---|---|
+| Install global + `/descobrir` one-invocation | Entregue |
+| Graphify pinado `0.9.32` em worktree isolada | Entregue |
+| prepare / finalize determinísticos | Entregue |
+| Explorer só semântica | Entregue |
+| SQLite central por namespace (XDG) | Entregue |
+| Obsidian one-way (baseline aceito) | Entregue |
+| L1/L2 stitching, Neo4j, Docker | Deferred |
+
+### Operação rápida
 
 ```bash
-node --test skills/descobrir/test/*.test.mjs
-node skills/descobrir/cli.mjs persist-candidate --db <store.sqlite> --input <draft.json>
+# 1) Instalar skill/comando global (symlink live; reinicie o OpenCode depois)
+node skills/descobrir/install.mjs install
+
+# 2) Setup Graphify pinado (uma vez por máquina)
+node skills/descobrir/cli.mjs setup
+node skills/descobrir/cli.mjs setup-status
+
+# 3) No OpenCode (qualquer repo Git): /descobrir <projeto>
+#    Ou CLI determinística:
+node skills/descobrir/cli.mjs prepare \
+  --namespace <ns> --logical-repo <repo> --project-path <abs-git-root>
+# Explorer grava payloads em <run_root>/explorer/payloads/
+node skills/descobrir/cli.mjs finalize \
+  --run-root <abs-run-root> --db <store.sqlite> --source-repo <abs-git-root>
 node skills/descobrir/cli.mjs accept --db <store.sqlite> \
-  --namespace <ns> --logical-repo <repo> --graph-hash <hex> --approver "Marley"
+  --candidate-id <id> --approver "Marley"
+node skills/descobrir/cli.mjs project-obsidian --db <store.sqlite> \
+  --namespace <ns> --logical-repo <repo> --out <projection-root>
+
+# Status / recovery (não toca SQLite de candidates)
+node skills/descobrir/cli.mjs status
+node skills/descobrir/cli.mjs cleanup --stale
+
+# Testes + E2E hermético (sem rede)
+node --test skills/descobrir/test/*.test.mjs
+node skills/descobrir/e2e/run.mjs --graphify fake
 ```
+
+**Paths centrais (defaults):**
+
+- DB: `${XDG_DATA_HOME:-~/.local/share}/descobrir/<namespace>.sqlite` (`0600`)
+- Runs: `${XDG_CACHE_HOME:-~/.cache}/descobrir/runs/<run-id>/`
+- Após `install`/`uninstall`: **quit e restart OpenCode**
+
+**Exit codes:** `0` ok · `1` erro infra/typed · `2` blockers semânticos no finalize (sem write no DB)
 
 ### Navegação Descobrir
 
 - Skill: [`skills/descobrir/SKILL.md`](skills/descobrir/SKILL.md)
+- Operador: [`skills/descobrir/OPERATOR.md`](skills/descobrir/OPERATOR.md)
 - Fluxo: [`workflows/descobrir/FLOW.md`](workflows/descobrir/FLOW.md)
 - Contratos: [`workflows/descobrir/contracts/`](workflows/descobrir/contracts/)
-- ADR 0002: [`docs/adr/0002-descobrir-adapter-and-record-model.md`](docs/adr/0002-descobrir-adapter-and-record-model.md)
-- ADR 0003: [`docs/adr/0003-descobrir-prototype-runtime.md`](docs/adr/0003-descobrir-prototype-runtime.md)
-- ADR 0004: [`docs/adr/0004-cross-service-stitching-c4.md`](docs/adr/0004-cross-service-stitching-c4.md)
-- ADR 0005: [`docs/adr/0005-descobrir-skill-sqlite-store.md`](docs/adr/0005-descobrir-skill-sqlite-store.md)
+- E2E: [`skills/descobrir/e2e/run.mjs`](skills/descobrir/e2e/run.mjs)
+- ADR 0002–0006 em [`docs/adr/`](docs/adr/)
 - Protótipo (descartável): [`prototypes/descobrir-v1/`](prototypes/descobrir-v1/)
 
 ## Mapa de arquivos
@@ -78,28 +118,21 @@ ai-dev-harness/
 ├── docs/
 │   ├── domain/glossary.md
 │   └── adr/
-│       ├── 0001-graph-source-diagram-projection.md
-│       ├── 0002-descobrir-adapter-and-record-model.md
-│       ├── 0003-descobrir-prototype-runtime.md
-│       ├── 0004-cross-service-stitching-c4.md
-│       └── 0005-descobrir-skill-sqlite-store.md
+│       ├── 0001-… 0005-…
+│       └── 0006-descobrir-operational-orchestration.md
 ├── skills/
-│   └── descobrir/                               ← skill de produção (SQLite + CLI)
+│   └── descobrir/
 │       ├── SKILL.md
+│       ├── OPERATOR.md
+│       ├── install.mjs
 │       ├── cli.mjs
+│       ├── commands/descobrir.md
+│       ├── e2e/run.mjs
 │       ├── src/
 │       └── test/
-├── workflows/
-│   ├── project-onboarding/
-│   │   ├── FLOW.md
-│   │   └── diagram.html
-│   └── descobrir/
-│       ├── FLOW.md
-│       └── contracts/                           ← schemas canônicos
-├── prototypes/
-│   └── descobrir-v1/                            ← protótipo descartável (Gate C)
-└── examples/
-    └── nori/README.md
+├── workflows/descobrir/contracts/
+├── prototypes/descobrir-v1/
+└── examples/nori/
 ```
 
 ## Navegação

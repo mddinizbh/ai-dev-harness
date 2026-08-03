@@ -26,7 +26,11 @@ A skill de produção vive em `skills/descobrir/` com `SKILL.md` descoberta por 
 
 ### Graphify apenas em cópia/worktree efêmera (path B)
 
-O agente/operador roda Graphify somente em cópia ou worktree efêmera do repositório-alvo na revisão pinada. O código de produção da skill **não** invoca Graphify. O Explorer raciocina sobre `graph.json` isolado; o repositório-fonte nunca é mutado por essa etapa.
+Graphify roda somente em worktree efêmera do repositório-alvo na revisão pinada.
+O Explorer raciocina sobre saída isolada; o repositório-fonte nunca é mutado.
+**Atualização (ADR 0006):** a skill de produção **passa a invocar** Graphify de
+forma gerenciada (`prepare` / `setup` com `graphifyy==0.9.32`). O operador não
+precisa mais rodar Graphify manualmente.
 
 ### Saída LLM untrusted; determinismo só no envelope
 
@@ -75,9 +79,9 @@ Sem auto-accept. Rejeição deixa o baseline aceito anterior inalterado.
 
 **Negativas / riscos:**
 
-- Store de documentos não otimiza travessia de grafo (L1/L2 / Neo4j ficam para ADR futuro).
+- Store de documentos não otimiza travessia de grafo (L1/L2 / Neo4j ficam para ADR futuro — ver ADR 0006).
 - Cobertura `comprovado` ainda depende de verificação de repositório na revisão pinada — fora do auto-accept.
-- Operador deve cumprir o runbook de isolamento Graphify; violação não é enforced pelo binário da skill.
+- Isolamento Graphify é enforced pelo `prepare` (worktree + cleanup); setup pinado é pré-requisito explícito (`cli.mjs setup`).
 
 ## Alternativas rejeitadas
 
