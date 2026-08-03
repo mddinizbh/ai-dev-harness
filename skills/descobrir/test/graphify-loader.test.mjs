@@ -254,4 +254,69 @@ describe("loadGraphifyOutput — fail closed", () => {
     assert.equal(loaded.nodes.length, 0);
     assert.equal(loaded.relations.length, 0);
   });
+
+  test("nested relative file labels from Graphify AST are accepted", () => {
+    const graph = loadFixtureGraph();
+    graph.nodes = graph.nodes.map((n, i) =>
+      i === 0
+        ? {
+            ...n,
+            label: "agent/client/client.go",
+            source_file: "domains/agent/client/client.go",
+          }
+        : n,
+    );
+    const loaded = loadGraphifyOutput({ graph, producerVersion: "0.9.32" });
+    assert.equal(loaded.nodes[0].label, "agent/client/client.go");
+    assert.equal(loaded.nodes[0].source_file, "domains/agent/client/client.go");
+  });
+
+  test("empty source_file/source_location on external symbols are treated as absent", () => {
+    const graph = loadFixtureGraph();
+    graph.nodes = graph.nodes.map((n, i) =>
+      i === 0
+        ? {
+            ...n,
+            id: "external_context",
+            label: "Context",
+            source_file: "",
+            source_location: "",
+          }
+        : n,
+    );
+    const loaded = loadGraphifyOutput({ graph, producerVersion: "0.9.32" });
+    assert.equal(loaded.nodes[0].id, "external_context");
+    assert.equal(Object.hasOwn(loaded.nodes[0], "source_file"), false);
+    assert.equal(Object.hasOwn(loaded.nodes[0], "source_location"), false);
+  });
+
+  test("absolute and machine-root labels fail closed without leaking path", () => {
+    for (const bad of [
+      "/Users/secret/main.go",
+      "/home/secret/main.go",
+      "/private/tmp/main.go",
+      "C:\\Users\\x\\main.go",
+      "agent\\client.go",
+      "http://evil.example/x",
+      "foo/../bar.go",
+      "foo//bar.go",
+      "foo/./bar.go",
+    ]) {
+      const graph = loadFixtureGraph();
+      graph.nodes = graph.nodes.map((n, i) =>
+        i === 0 ? { ...n, label: bad } : n,
+      );
+      assert.throws(
+        () => loadGraphifyOutput({ graph, producerVersion: "0.9.32" }),
+        (err) => {
+          assert.ok(err instanceof GraphifyLoaderError);
+          assert.match(String(err.message), /label must not embed path material/);
+          assertNoMachinePath(String(err.message));
+          assert.equal(String(err.message).includes(bad), false);
+          return true;
+        },
+        `expected reject for label=${bad}`,
+      );
+    }
+  });
 });

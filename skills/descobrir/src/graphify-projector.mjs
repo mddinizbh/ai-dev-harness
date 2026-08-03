@@ -11,6 +11,7 @@ import { compareCodeUnits } from "./explorer-payload-shape.mjs";
 import { GraphifyProjectionError } from "./errors.mjs";
 import {
   assertRepoRelativeLocator,
+  assertSafeDisplayLabel,
   assertSafeSourceLocation,
 } from "./graphify-loader.mjs";
 import { sha256Text, stableStringify } from "./stable-json.mjs";
@@ -145,21 +146,9 @@ export function chunkOpaqueKey(index) {
  * @param {string} label
  */
 function assertSanitizedLabel(value, label) {
-  if (value === undefined) return;
-  if (typeof value !== "string") {
-    fail(`${label} must be a string`);
-  }
-  if (
-    value.includes("/")
-    || value.includes("\\")
-    || value.startsWith("/")
-    || value.includes("/Users/")
-    || value.includes("/private/")
-    || value.includes("\n")
-    || value.includes("\r")
-  ) {
-    fail(`${label} must not contain path or raw multi-line material`);
-  }
+  // Nested relative Graphify file labels ("agent/client/client.go") are valid;
+  // machine roots / absolute paths still fail closed via assertSafeDisplayLabel.
+  assertSafeDisplayLabel(value, label, fail);
 }
 
 /**
@@ -181,8 +170,12 @@ function projectNodeFact(node) {
   };
   if (typeof node.label === "string") fact.label = node.label;
   if (typeof node.file_type === "string") fact.file_type = node.file_type;
-  if (typeof node.source_file === "string") fact.source_file = node.source_file;
-  if (typeof node.source_location === "string") fact.source_location = node.source_location;
+  if (typeof node.source_file === "string" && node.source_file.length > 0) {
+    fact.source_file = node.source_file;
+  }
+  if (typeof node.source_location === "string" && node.source_location.length > 0) {
+    fact.source_location = node.source_location;
+  }
   if (typeof node._origin === "string") fact.origin = node._origin;
   return fact;
 }
@@ -221,8 +214,12 @@ function projectEdgeFact(edge) {
     relation,
   };
   if (typeof edge.confidence === "string") fact.confidence = edge.confidence;
-  if (typeof edge.source_file === "string") fact.source_file = edge.source_file;
-  if (typeof edge.source_location === "string") fact.source_location = edge.source_location;
+  if (typeof edge.source_file === "string" && edge.source_file.length > 0) {
+    fact.source_file = edge.source_file;
+  }
+  if (typeof edge.source_location === "string" && edge.source_location.length > 0) {
+    fact.source_location = edge.source_location;
+  }
   if (typeof edge.context === "string") fact.context = edge.context;
   if (typeof edge.weight === "number" && Number.isFinite(edge.weight)) fact.weight = edge.weight;
   if (typeof edge._origin === "string") fact.origin = edge._origin;
@@ -253,8 +250,12 @@ function projectHyperedgeFact(hyper) {
     assertSanitizedLabel(hyper.label, "hyperedge.label");
     fact.label = hyper.label;
   }
-  if (typeof hyper.source_file === "string") fact.source_file = hyper.source_file;
-  if (typeof hyper.source_location === "string") fact.source_location = hyper.source_location;
+  if (typeof hyper.source_file === "string" && hyper.source_file.length > 0) {
+    fact.source_file = hyper.source_file;
+  }
+  if (typeof hyper.source_location === "string" && hyper.source_location.length > 0) {
+    fact.source_location = hyper.source_location;
+  }
   if (typeof hyper._origin === "string") fact.origin = hyper._origin;
   return fact;
 }

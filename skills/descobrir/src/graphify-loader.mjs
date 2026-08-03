@@ -68,8 +68,10 @@ function isPlainObject(value) {
  * @param {(message: string) => never} [fail]
  */
 export function assertRepoRelativeLocator(value, label, fail = failLoad) {
-  if (value === undefined) return;
-  if (typeof value !== "string" || value.length === 0) {
+  // Graphify emits "" for external/stdlib symbols with no in-repo locator.
+  // Treat empty the same as absent so optional locators stay optional.
+  if (value === undefined || value === null || value === "") return;
+  if (typeof value !== "string") {
     fail(`${label} must be a non-empty repo-relative path`);
   }
   const path = value;
@@ -110,8 +112,9 @@ export function assertRepoRelativeLocator(value, label, fail = failLoad) {
  * @param {(message: string) => never} [fail]
  */
 export function assertSafeSourceLocation(value, label, fail = failLoad) {
-  if (value === undefined) return;
-  if (typeof value !== "string" || value.length === 0) {
+  // Empty string = absent (Graphify external symbols).
+  if (value === undefined || value === null || value === "") return;
+  if (typeof value !== "string") {
     fail(`${label} must be a non-empty string when present`);
   }
   if (
@@ -146,6 +149,18 @@ function assertNoBannedFields(entity, label) {
  * @param {unknown} node
  * @param {number} index
  */
+/**
+ * Drop empty optional locators so downstream never treats "" as a real path.
+ * @param {Record<string, unknown>} entity
+ */
+function normalizeOptionalLocators(entity) {
+  for (const key of ["source_file", "source_location"]) {
+    if (entity[key] === "") {
+      delete entity[key];
+    }
+  }
+}
+
 function assertNode(node, index) {
   const label = `nodes[${index}]`;
   if (!isPlainObject(node)) {
@@ -155,6 +170,7 @@ function assertNode(node, index) {
   if (typeof node.id !== "string" || node.id.length === 0) {
     failLoad(`${label}.id must be a non-empty string`);
   }
+  normalizeOptionalLocators(node);
   if (node.source_file !== undefined) {
     assertRepoRelativeLocator(node.source_file, `${label}.source_file`);
   }
@@ -162,15 +178,50 @@ function assertNode(node, index) {
     assertSafeSourceLocation(node.source_location, `${label}.source_location`);
   }
   if (typeof node.label === "string") {
-    // Labels may be ".Greet()" etc.; reject only path separators and machine roots.
-    if (
-      node.label.includes("/")
-      || node.label.includes("\\")
-      || node.label.startsWith("/")
-      || node.label.includes("/Users/")
-      || node.label.includes("/private/")
-    ) {
-      failLoad(`${label}.label must not embed path material`);
+    // Labels may be ".Greet()" or nested file fragments like "agent/client/client.go"
+    // (Graphify AST file nodes). Reject only absolute/machine path material and
+    // backslash paths — not repo-relative nested labels that legitimately contain "/".
+    assertSafeDisplayLabel(node.label, `${label}.label`);
+  }
+}
+
+/**
+ * Display labels from Graphify: allow relative nested fragments with "/",
+ * reject absolute roots, machine markers, backslashes, and traversal.
+ *
+ * @param {unknown} value
+ * @param {string} label
+ * @param {(message: string) => never} [fail]
+ */
+export function assertSafeDisplayLabel(value, label, fail = failLoad) {
+  if (value === undefined) return;
+  if (typeof value !== "string") {
+    fail(`${label} must be a string when present`);
+  }
+  if (value.length === 0) return;
+  if (
+    value.includes("\\")
+    || value.includes("\0")
+    || value.includes("\n")
+    || value.includes("\r")
+    || value.startsWith("/")
+    || /^[A-Za-z]:[\\/]/.test(value)
+    || value.includes("/Users/")
+    || value.includes("/home/")
+    || value.includes("/private/")
+    || value.includes("/var/folders/")
+    || value.includes("IdeaProjects")
+    || value.includes("://")
+  ) {
+    fail(`${label} must not embed path material`);
+  }
+  // Nested relative labels ("pkg/foo.go") are OK; reject empty/traversal segments.
+  if (value.includes("/")) {
+    const segments = value.split("/");
+    for (const segment of segments) {
+      if (segment === "" || segment === "." || segment === "..") {
+        fail(`${label} must not embed path material`);
+      }
     }
   }
 }
@@ -195,6 +246,7 @@ function assertRelation(rel, index, relationsKey) {
   if (typeof rel.relation !== "string" || rel.relation.length === 0) {
     failLoad(`${label}.relation must be a non-empty string`);
   }
+  normalizeOptionalLocators(rel);
   if (rel.source_file !== undefined) {
     assertRepoRelativeLocator(rel.source_file, `${label}.source_file`);
   }
@@ -237,6 +289,7 @@ function assertRecognizedHyperedge(hyper, index) {
       failLoad(`${label}.nodes[${i}] must be a non-empty string`);
     }
   }
+  normalizeOptionalLocators(hyper);
   if (hyper.source_file !== undefined) {
     assertRepoRelativeLocator(hyper.source_file, `${label}.source_file`);
   }
