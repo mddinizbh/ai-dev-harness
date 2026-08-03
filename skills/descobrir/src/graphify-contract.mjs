@@ -9,6 +9,9 @@ import { DescobrirError } from "./errors.mjs";
 /** Pinned graphifyy package version accepted by Descobrir. */
 export const GRAPHIFY_PINNED_VERSION = "0.9.32";
 
+/** Exact uv/pip package spec for managed setup (never floating). */
+export const GRAPHIFY_PACKAGE_SPEC = `graphifyy==${GRAPHIFY_PINNED_VERSION}`;
+
 /**
  * Upstream Graphify source commit corresponding to the pinned package.
  * @see docs/adr/0004-cross-service-stitching-c4.md

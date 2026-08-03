@@ -91,6 +91,18 @@ export class WorktreeError extends DescobrirError {
   }
 }
 
+export class GraphifyToolError extends DescobrirError {
+  /**
+   * @param {string} message
+   * @param {{ cause?: unknown, code?: string }} [options]
+   */
+  constructor(message, options = {}) {
+    super(message, options.cause !== undefined ? { cause: options.cause } : {});
+    this.name = "GraphifyToolError";
+    if (options.code) /** @type {any} */ (this).code = options.code;
+  }
+}
+
 /**
  * Sanitize error text for CLI stderr — strip absolute paths.
  * @param {unknown} err
