@@ -2,27 +2,35 @@
  * Seam: pure closed build/validate/hash/freeze for run descriptor v1.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, test } from "node:test";
 
-import { chunkArtifactPath } from "../src/manifest-builder.mjs";
-import { recomputeManifestId } from "../src/manifest-builder.mjs";
+import { repositorySnapshot } from "../src/git-reader.mjs";
+import { chunkArtifactPath, recomputeManifestId } from "../src/manifest-builder.mjs";
 import {
   RUN_DESCRIPTOR_VERSION,
   RUN_PATHS,
   RunDescriptorError,
   buildRunDescriptor,
   explorerPayloadPath,
+  requireDirtyName,
   validateRunDescriptor,
 } from "../src/run-descriptor-shape.mjs";
 import { sha256Text, stablePretty, stableStringify } from "../src/stable-json.mjs";
 import {
-  ADAPTER,
   MUTATION_PRE,
-  PRODUCER,
   buildFixtureParts,
   buildInput,
   packageIntent,
 } from "./run-descriptor-fixtures.mjs";
+
+const gitTemps = [];
+afterEach(() => {
+  while (gitTemps.length) rmSync(gitTemps.pop(), { recursive: true, force: true });
+});
 
 describe("constants", () => {
   test("version-1 frozen paths", () => {
@@ -272,5 +280,103 @@ describe("buildRunDescriptor / validateRunDescriptor", () => {
       assert.equal(d.paths.chunks[c.chunk_key], chunkArtifactPath(c.chunk_key));
       assert.equal(d.content_hashes[chunkArtifactPath(c.chunk_key)], c.content_sha256);
     }
+  });
+
+  test("dirty_names accepts spaces and strips matching outer quotes", () => {
+    assert.equal(requireDirtyName("my file.ts", "t"), "my file.ts");
+    assert.equal(requireDirtyName('"my file.ts"', "t"), "my file.ts");
+    assert.equal(requireDirtyName("src/my file.ts", "t"), "src/my file.ts");
+    const parts = buildFixtureParts();
+    const d = buildRunDescriptor(
+      buildInput(parts, {
+        mutation_pre: {
+          anchor_object_present: true,
+          tracked_file_count: 1,
+          dirty_path_count: 1,
+          dirty_names: ["my file.ts"],
+          summary_hash: "c".repeat(64),
+        },
+      }),
+    );
+    assert.deepEqual(d.mutation_pre.dirty_names, ["my file.ts"]);
+  });
+
+  test("dirty_names rejects absolute, drive, NUL, newline, backslash, dot segments, quoted traversal", () => {
+    const bad = [
+      "/abs/x",
+      "C:\\Windows\\x",
+      "C:/Windows/x",
+      "a\0b",
+      "a\nb",
+      "foo\\bar",
+      "../escape",
+      "foo/../bar",
+      "foo/./bar",
+      ".",
+      "..",
+      '"../evil"',
+      '"/abs"',
+      '""',
+      '"C:/x"',
+    ];
+    for (const name of bad) {
+      assert.throws(() => requireDirtyName(name, "t"), RunDescriptorError, name);
+    }
+    const parts = buildFixtureParts();
+    assert.throws(
+      () =>
+        buildRunDescriptor(
+          buildInput(parts, {
+            mutation_pre: {
+              ...MUTATION_PRE,
+              dirty_path_count: 1,
+              dirty_names: ['"../evil"'],
+            },
+          }),
+        ),
+      RunDescriptorError,
+    );
+  });
+
+  test("buildRunDescriptor accepts repositorySnapshot dirty_names with spaced file", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rd-git-"));
+    gitTemps.push(repo);
+    const run = (args) => {
+      const r = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr || r.stdout);
+      return r.stdout.trim();
+    };
+    run(["init"]);
+    run(["config", "user.email", "test@example.com"]);
+    run(["config", "user.name", "test"]);
+    writeFileSync(join(repo, "README"), "x\n");
+    run(["add", "README"]);
+    run(["commit", "-m", "init"]);
+    const rev = run(["rev-parse", "HEAD"]);
+    writeFileSync(join(repo, "my file.ts"), "export {}\n");
+
+    const snap = repositorySnapshot({ cwd: repo, anchorRevision: rev });
+    // Git porcelain may quote paths with spaces as "my file.ts".
+    assert.ok(
+      snap.dirty_names.some((n) => n === "my file.ts" || n === '"my file.ts"'),
+      JSON.stringify(snap.dirty_names),
+    );
+    assert.equal(snap.dirty_path_count, snap.dirty_names.length);
+
+    const parts = buildFixtureParts();
+    const d = buildRunDescriptor(
+      buildInput(parts, {
+        mutation_pre: {
+          anchor_object_present: snap.anchor_object_present,
+          tracked_file_count: snap.tracked_file_count,
+          dirty_path_count: snap.dirty_path_count,
+          dirty_names: snap.dirty_names,
+          summary_hash: snap.summary_hash,
+        },
+      }),
+    );
+    // Descriptor stores canonical unquoted dirty names.
+    assert.deepEqual(d.mutation_pre.dirty_names, ["my file.ts"]);
+    assert.equal(d.mutation_pre.summary_hash, snap.summary_hash);
   });
 });

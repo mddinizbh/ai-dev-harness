@@ -5,6 +5,7 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -91,6 +92,14 @@ export function loadRunDescriptor(runRoot) {
   let raw;
   try {
     if (!existsSync(abs)) failIo("run descriptor file is missing");
+    let st;
+    try {
+      st = lstatSync(abs);
+    } catch (err) {
+      failIo(`failed to stat run descriptor: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (st.isSymbolicLink()) failIo("run descriptor must not be a symlink");
+    if (!st.isFile()) failIo("run descriptor must be a regular file");
     raw = readFileSync(abs, "utf8");
   } catch (err) {
     if (err instanceof RunDescriptorError) throw err;

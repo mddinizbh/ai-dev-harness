@@ -57,6 +57,20 @@ export function requireSafeRelativePath(value, label) {
   }
   return value;
 }
+/** Git porcelain dirty_names: spaces OK; strip outer quotes; reject abs/drive/NUL/newline/\\ /.|.. */
+export function requireDirtyName(value, label) {
+  if (typeof value !== "string" || value === "") failShape(`${label} must be a non-empty string`);
+  if (value.includes("\0") || value.includes("\n") || value.includes("\r")) failShape(`${label} contains forbidden control character`);
+  let s = value.length >= 2 && value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+  if (s === "") failShape(`${label} is empty after quote strip`);
+  if (s.includes("\0") || s.includes("\n") || s.includes("\r")) failShape(`${label} contains forbidden control character`);
+  if (s.startsWith("/") || /^[A-Za-z]:[\\/]/.test(s)) failShape(`${label} must not be an absolute or drive path`);
+  if (s.includes("\\")) failShape(`${label} must not contain backslash`);
+  for (const seg of s.split("/")) {
+    if (seg === "" || seg === "." || seg === ".." || seg === "\u2024" || seg === "\uFF0E") failShape(`${label} has forbidden path segment`);
+  }
+  return s;
+}
 function reqToken(v, l) {
   if (typeof v !== "string" || !TOKEN.test(v) || v === "." || v === ".." || v.includes("..")) {
     failShape(`${l} must be a single safe token`);
@@ -136,7 +150,7 @@ function validateMutationPre(m) {
   const dirtyCount = reqNni(m.dirty_path_count, "mutation_pre.dirty_path_count");
   if (!Array.isArray(m.dirty_names)) failShape("mutation_pre.dirty_names must be an array");
   if (m.dirty_names.length !== dirtyCount) failShape("mutation_pre.dirty_path_count must equal dirty_names.length");
-  const dirty_names = m.dirty_names.map((n, i) => requireSafeRelativePath(n, `mutation_pre.dirty_names[${i}]`));
+  const dirty_names = m.dirty_names.map((n, i) => requireDirtyName(n, `mutation_pre.dirty_names[${i}]`));
   const sorted = [...dirty_names].sort(compareCodeUnits);
   for (let i = 0; i < dirty_names.length; i++) {
     if (dirty_names[i] !== sorted[i]) failShape("mutation_pre.dirty_names must be sorted by code unit");
