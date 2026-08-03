@@ -10,7 +10,12 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 
 import { WorktreeError, withDetachedWorktree } from "../src/worktree.mjs";
-import { captureSourceStatusV2, captureWorktreeList } from "../src/git-reader.mjs";
+import {
+  captureSourceStatusV2,
+  captureWorktreeList,
+  worktreeListMentionsPath,
+} from "../src/git-reader.mjs";
+import { installFakeGit } from "./fake-git.mjs";
 
 const temps = [];
 
@@ -255,22 +260,145 @@ describe("withDetachedWorktree", () => {
     );
   });
 
-  test("stale registered worktree path under run root is force-removed on cleanup", async () => {
+  test("stale registration: add worktree, delete directory, lifecycle recovers and ends unregistered", async () => {
     const src = makeSourceRepo();
     const runRoot = makeRunRoot();
+    const stalePath = join(runRoot, "stale-wt");
     const statusBefore = captureSourceStatusV2(src.cwd);
     const wtBefore = captureWorktreeList(src.cwd);
 
-    // First create a worktree manually to simulate stale registration collision handling
-    // via a successful lifecycle that must still end clean.
-    await withDetachedWorktree({
+    fixtureGit(src.cwd, ["worktree", "add", "--detach", stalePath, src.head]);
+    assert.equal(worktreeListMentionsPath(captureWorktreeList(src.cwd), stalePath), true);
+    rmSync(stalePath, { recursive: true, force: true });
+    // Directory gone but registration remains (prunable/stale).
+    assert.equal(worktreeListMentionsPath(captureWorktreeList(src.cwd), stalePath), true);
+    assert.equal(existsSync(stalePath), false);
+
+    const outcome = await withDetachedWorktree({
       repoPath: src.cwd,
       revision: src.head,
       runRoot,
-      callback: async () => "done",
+      worktreeId: "stale-wt",
+      callback: async ({ worktreePath }) => {
+        assert.equal(worktreePath, stalePath);
+        assert.ok(existsSync(worktreePath));
+        return "recovered";
+      },
     });
 
+    assert.equal(outcome.result, "recovered");
+    assert.equal(existsSync(stalePath), false);
+    assert.equal(worktreeListMentionsPath(captureWorktreeList(src.cwd), stalePath), false);
     assert.equal(captureSourceStatusV2(src.cwd), statusBefore);
     assert.equal(captureWorktreeList(src.cwd), wtBefore);
+  });
+
+  test("hung worktree remove+prune: never reports success; typed WorktreeError; no registration leak", async () => {
+    const src = makeSourceRepo();
+    const runRoot = makeRunRoot();
+    const fake = installFakeGit({ hangOn: ["worktree remove", "worktree prune"] });
+    temps.push(fake.dir);
+    const statusBefore = captureSourceStatusV2(src.cwd);
+    const wtBefore = captureWorktreeList(src.cwd);
+    let callbackRan = false;
+    let observedPath = "";
+
+    await assert.rejects(
+      () =>
+        withDetachedWorktree({
+          repoPath: src.cwd,
+          revision: src.head,
+          runRoot,
+          worktreeId: "hang-wt",
+          // > cold-start of node fake-git (~200ms); short enough that hung remove/prune trip timeout.
+          timeoutMs: 800,
+          gitBin: fake.gitBin,
+          callback: async ({ worktreePath }) => {
+            callbackRan = true;
+            observedPath = worktreePath;
+            return { ok: true };
+          },
+        }),
+      (err) => err instanceof WorktreeError && /cleanup|registered|worktree/i.test(err.message),
+    );
+
+    assert.equal(callbackRan, true);
+    // Must not leave a registered worktree for the path (recovery or hard fail after verify).
+    // Use real git for observation (fake hangs on remove/prune only).
+    const listAfter = captureWorktreeList(src.cwd);
+    if (observedPath) {
+      assert.equal(
+        worktreeListMentionsPath(listAfter, observedPath),
+        false,
+        `registration leak for ${observedPath}:\n${listAfter}`,
+      );
+      assert.equal(existsSync(observedPath), false);
+    }
+    assert.equal(captureSourceStatusV2(src.cwd), statusBefore);
+    // Source main worktree registration only (same as before) once leak-free.
+    assert.equal(captureWorktreeList(src.cwd), wtBefore);
+  });
+
+  test("cleanup failure dominates successful callback (no success return)", async () => {
+    const src = makeSourceRepo();
+    const runRoot = makeRunRoot();
+    const fake = installFakeGit({ hangOn: ["worktree remove", "worktree prune"] });
+    temps.push(fake.dir);
+
+    let resolvedValue = null;
+    await assert.rejects(
+      async () => {
+        const outcome = await withDetachedWorktree({
+          repoPath: src.cwd,
+          revision: src.head,
+          runRoot,
+          worktreeId: "dom-wt",
+          timeoutMs: 800,
+          gitBin: fake.gitBin,
+          callback: async () => {
+            resolvedValue = "callback-success";
+            return resolvedValue;
+          },
+        });
+        // If implementation wrongly returns, force fail:
+        assert.fail(`must not resolve success, got ${JSON.stringify(outcome)}`);
+      },
+      WorktreeError,
+    );
+    assert.equal(resolvedValue, "callback-success");
+    assert.equal(worktreeListMentionsPath(captureWorktreeList(src.cwd), join(runRoot, "dom-wt")), false);
+  });
+
+  test("callback error is not swallowed when cleanup also fails", async () => {
+    const src = makeSourceRepo();
+    const runRoot = makeRunRoot();
+    const fake = installFakeGit({ hangOn: ["worktree remove", "worktree prune"] });
+    temps.push(fake.dir);
+
+    await assert.rejects(
+      () =>
+        withDetachedWorktree({
+          repoPath: src.cwd,
+          revision: src.head,
+          runRoot,
+          worktreeId: "cb-err-wt",
+          timeoutMs: 800,
+          gitBin: fake.gitBin,
+          callback: async () => {
+            throw new Error("injected-callback-failure");
+          },
+        }),
+      (err) => {
+        if (!(err instanceof WorktreeError)) return false;
+        // Cleanup dominates message, but original callback error must remain reachable.
+        const cause = err.cause;
+        return (
+          /cleanup|registered|worktree/i.test(err.message) &&
+          cause instanceof Error &&
+          cause.message === "injected-callback-failure"
+        );
+      },
+    );
+    assert.equal(worktreeListMentionsPath(captureWorktreeList(src.cwd), join(runRoot, "cb-err-wt")), false);
   });
 });
