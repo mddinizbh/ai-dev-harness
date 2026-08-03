@@ -45,6 +45,14 @@ export class StoreError extends DescobrirError {
   }
 }
 
+export class ExplorerPayloadError extends DescobrirError {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "ExplorerPayloadError";
+  }
+}
+
 export class AcceptanceError extends DescobrirError {
   /** @param {string} message */
   constructor(message) {
