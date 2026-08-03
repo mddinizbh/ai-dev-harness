@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -7,6 +8,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
@@ -245,6 +247,136 @@ describe("resolveRuntimeConfig — revision intent", () => {
   });
 });
 
+/**
+ * @param {string} dir
+ * @param {string[]} args
+ */
+function git(dir, args) {
+  const r = spawnSync("git", ["-C", dir, ...args], {
+    encoding: "utf8",
+    shell: false,
+    timeout: 15_000,
+    maxBuffer: 64 * 1024,
+  });
+  if (r.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${r.stderr || r.stdout || r.status}`);
+  }
+  return (r.stdout || "").trim();
+}
+
+/**
+ * Temp Git repo with two commits; returns { repo, head }.
+ * @returns {{ repo: string, head: string }}
+ */
+function makeTwoCommitRepo() {
+  const repo = tempRoot("descobrir-git-");
+  git(repo, ["init"]);
+  git(repo, ["config", "user.email", "descobrir-test@example.com"]);
+  git(repo, ["config", "user.name", "Descobrir Test"]);
+  writeFileSync(join(repo, "a.txt"), "one\n");
+  git(repo, ["add", "a.txt"]);
+  git(repo, ["commit", "-m", "first"]);
+  writeFileSync(join(repo, "b.txt"), "two\n");
+  git(repo, ["add", "b.txt"]);
+  git(repo, ["commit", "-m", "second"]);
+  const head = git(repo, ["rev-parse", "HEAD"]);
+  assert.match(head, /^[a-f0-9]{40}$/);
+  return { repo, head };
+}
+
+describe("resolveRuntimeConfig — automatic Git HEAD (integration)", () => {
+  test("omitted source_revision equals git rev-parse HEAD of project_path", () => {
+    // Given a real Git repo with two commits
+    // When resolveRuntimeConfig is called without source_revision and without resolveHead inject
+    // Then source_revision is exactly the current HEAD SHA
+    const { repo, head } = makeTwoCommitRepo();
+    const home = tempRoot("descobrir-home-git-");
+    const cfg = resolveRuntimeConfig(
+      {
+        namespace: "nori",
+        logical_repo: "nori-cloud",
+        project_path: repo,
+        // source_revision intentionally omitted
+      },
+      {
+        home,
+        env: {
+          HOME: home,
+          XDG_DATA_HOME: join(home, "xdg-data"),
+          XDG_CACHE_HOME: join(home, "xdg-cache"),
+        },
+        createRunId: () => "run-from-head",
+      },
+    );
+    assert.equal(cfg.source_revision, head);
+    assert.equal(cfg.package_intent.source_revision, head);
+    // Pure resolution still creates no layout/DB.
+    assert.equal(existsSync(join(home, "xdg-data")), false);
+  });
+
+  test("non-Git project_path fails typed before any layout/DB creation", () => {
+    const home = tempRoot("descobrir-home-nongit-");
+    const project = join(home, "not-a-repo");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, "readme.txt"), "no git here\n");
+
+    assert.throws(
+      () =>
+        resolveRuntimeConfig(
+          {
+            namespace: "nori",
+            logical_repo: "nori-cloud",
+            project_path: project,
+          },
+          {
+            home,
+            env: {
+              HOME: home,
+              XDG_DATA_HOME: join(home, "xdg-data"),
+              XDG_CACHE_HOME: join(home, "xdg-cache"),
+            },
+            createRunId: () => "should-not-run",
+          },
+        ),
+      (err) =>
+        err instanceof RuntimeConfigError &&
+        err.name === "RuntimeConfigError" &&
+        /git|repository|revision/i.test(err.message) &&
+        !/resolveHead is not provided/i.test(err.message),
+    );
+
+    assert.equal(existsSync(join(home, "xdg-data")), false);
+    assert.equal(existsSync(join(home, "xdg-cache")), false);
+    assert.equal(existsSync(join(home, "xdg-data", "descobrir", "nori.sqlite")), false);
+  });
+
+  test("explicit invalid revision still fails typed without calling layout", () => {
+    const { repo } = makeTwoCommitRepo();
+    const home = tempRoot("descobrir-home-badrev-");
+    assert.throws(
+      () =>
+        resolveRuntimeConfig(
+          {
+            namespace: "nori",
+            logical_repo: "nori-cloud",
+            project_path: repo,
+            source_revision: "not-a-sha",
+          },
+          {
+            home,
+            env: {
+              HOME: home,
+              XDG_DATA_HOME: join(home, "xdg-data"),
+              XDG_CACHE_HOME: join(home, "xdg-cache"),
+            },
+          },
+        ),
+      RuntimeConfigError,
+    );
+    assert.equal(existsSync(join(home, "xdg-data")), false);
+  });
+});
+
 describe("resolveRuntimeConfig — invalid / escaping identifiers", () => {
   test("rejects namespace with path traversal '../other' before any write", () => {
     const { input, opts, home } = baseInput({ namespace: "../other" });
@@ -330,11 +462,9 @@ describe("createRuntimeLayout — directory creation and modes", () => {
 
     const dataMode = statSync(dataDir).mode & 0o777;
     const runMode = statSync(runDir).mode & 0o777;
-    // Owner rwx; no group/other write. Exact 0700 preferred when umask allows.
-    assert.equal(dataMode & 0o022, 0, `data dir world/group-writable: ${dataMode.toString(8)}`);
-    assert.equal(runMode & 0o022, 0, `run dir world/group-writable: ${runMode.toString(8)}`);
-    assert.ok((dataMode & 0o700) === 0o700);
-    assert.ok((runMode & 0o700) === 0o700);
+    // Exact 0700 where platform mode bits support it (POSIX chmod after mkdir).
+    assert.equal(dataMode, 0o700, `data dir mode ${dataMode.toString(8)}`);
+    assert.equal(runMode, 0o700, `run dir mode ${runMode.toString(8)}`);
   });
 
   test("materializes empty db file with mode 0600 when ensureDbFile is true", () => {
@@ -343,8 +473,7 @@ describe("createRuntimeLayout — directory creation and modes", () => {
     const layout = createRuntimeLayout(cfg, { ensureDbFile: true });
     assert.ok(existsSync(layout.db_path));
     const mode = statSync(layout.db_path).mode & 0o777;
-    assert.equal(mode & 0o077, 0, `db has group/other bits: ${mode.toString(8)}`);
-    assert.ok((mode & 0o600) === 0o600);
+    assert.equal(mode, 0o600, `db mode ${mode.toString(8)}`);
   });
 
   test("two namespace layouts stay isolated on disk", () => {
@@ -425,6 +554,6 @@ describe("createRuntimeLayout — directory creation and modes", () => {
     assert.equal(first.db_path, second.db_path);
     assert.equal(first.run_root, second.run_root);
     const mode = statSync(first.db_path).mode & 0o777;
-    assert.equal(mode & 0o077, 0);
+    assert.equal(mode, 0o600, `db mode ${mode.toString(8)}`);
   });
 });

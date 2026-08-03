@@ -1,8 +1,10 @@
 /**
- * Pure runtime config resolution for Descobrir operational runs.
- * No filesystem writes. Machine paths stay out of package_intent.
+ * Runtime config resolution for Descobrir operational runs.
+ * No filesystem writes (layout is separate). Machine paths stay out of package_intent.
+ * Omitted source_revision is resolved to exact Git HEAD of project_path via argv-only git.
  */
 
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 
@@ -248,8 +250,67 @@ function defaultRunId() {
   return `${now}-${rand}`;
 }
 
+const GIT_HEAD_TIMEOUT_MS = 15_000;
+const GIT_HEAD_MAX_BUFFER = 64 * 1024;
+
+/**
+ * Resolve exact current HEAD SHA for project_path.
+ * argv-only (`git -C <path> rev-parse HEAD`), shell:false, bounded I/O.
+ * Does not read dirty working-tree file bytes — only the commit object name.
+ *
+ * @param {string} projectPath absolute project path
+ * @returns {string} lowercase hex SHA (7-64)
+ */
+export function resolveGitHead(projectPath) {
+  requireNonEmptyString(projectPath, "project_path");
+  if (!isAbsolute(projectPath)) {
+    fail("project_path must be an absolute path");
+  }
+
+  let result;
+  try {
+    result = spawnSync("git", ["-C", projectPath, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      shell: false,
+      timeout: GIT_HEAD_TIMEOUT_MS,
+      maxBuffer: GIT_HEAD_MAX_BUFFER,
+      windowsHide: true,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    fail(`failed to resolve source_revision from git: ${msg}`);
+  }
+
+  if (result.error) {
+    const code = /** @type {NodeJS.ErrnoException} */ (result.error).code;
+    if (code === "ETIMEDOUT" || result.signal === "SIGTERM") {
+      fail("failed to resolve source_revision from git: timed out resolving HEAD");
+    }
+    fail(`failed to resolve source_revision from git: ${result.error.message}`);
+  }
+
+  if (result.status !== 0) {
+    const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
+    const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
+    const detail = (stderr || stdout || `exit ${result.status}`).slice(0, 400);
+    fail(`failed to resolve source_revision from git: not a git repository or HEAD unavailable (${detail})`);
+  }
+
+  const head = typeof result.stdout === "string" ? result.stdout.trim() : "";
+  if (head === "") {
+    fail("failed to resolve source_revision from git: empty HEAD");
+  }
+  // validateRevision enforces hex shape; keep message git-oriented on failure.
+  try {
+    return validateRevision(head);
+  } catch {
+    fail(`failed to resolve source_revision from git: unexpected HEAD value`);
+  }
+}
+
 /**
  * Resolve operational runtime config without creating directories or files.
+ * When source_revision is omitted, resolves Git HEAD of project_path automatically.
  *
  * @param {{
  *   namespace: string,
@@ -285,16 +346,14 @@ export function resolveRuntimeConfig(input, options = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "source_revision") && input.source_revision !== undefined) {
     sourceRevision = validateRevision(input.source_revision);
   } else {
-    const resolveHead = options.resolveHead;
-    if (typeof resolveHead !== "function") {
-      fail("source_revision is required when resolveHead is not provided");
-    }
+    const resolveHead =
+      typeof options.resolveHead === "function" ? options.resolveHead : resolveGitHead;
     try {
       const head = resolveHead(projectPath);
       sourceRevision = validateRevision(head);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
       if (err instanceof RuntimeConfigError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
       fail(`failed to resolve source_revision from git: ${msg}`);
     }
   }
