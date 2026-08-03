@@ -130,6 +130,14 @@ export class GraphifyProjectionError extends DescobrirError {
   }
 }
 
+export class ProjectionError extends DescobrirError {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "ProjectionError";
+  }
+}
+
 /**
  * Sanitize error text for CLI stderr — strip absolute paths.
  * @param {unknown} err
