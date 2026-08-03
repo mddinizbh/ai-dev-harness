@@ -13,6 +13,7 @@ import {
   getGraphifyToolStatus,
   setupGraphifyTool,
 } from "./src/graphify-tool.mjs";
+import { prepareRun } from "./src/prepare-run.mjs";
 import {
   acceptBaseline,
   exportPackage,
@@ -66,7 +67,7 @@ export async function main(argv) {
   try {
     if (!Array.isArray(argv) || argv.length === 0) {
       throw new Error(
-        "usage: setup | setup-status | persist-candidate | accept | export",
+        "usage: setup | setup-status | prepare | persist-candidate | accept | export",
       );
     }
     const [command, ...rest] = argv;
@@ -101,6 +102,47 @@ export async function main(argv) {
             setup_command: result.setup_command,
           })}\n`,
         );
+        return 0;
+      }
+      case "prepare":
+      case "run-start": {
+        const namespace = requireFlag("namespace", flags);
+        const logicalRepo = requireFlag("logical-repo", flags);
+        const projectPath = requireFlag("project-path", flags);
+        /** @type {Record<string, unknown>} */
+        const prepareInput = {
+          namespace,
+          logical_repo: logicalRepo,
+          project_path: projectPath,
+        };
+        if (typeof flags["source-revision"] === "string") {
+          prepareInput.source_revision = flags["source-revision"];
+        }
+        if (typeof flags["run-id"] === "string") {
+          prepareInput.run_id = flags["run-id"];
+        }
+        if (typeof flags.db === "string") {
+          prepareInput.db = flags.db;
+        }
+        if (typeof flags["obsidian-root"] === "string") {
+          prepareInput.obsidian_root = flags["obsidian-root"];
+        }
+        const result = await prepareRun(prepareInput);
+        // Sanitized public summary — no absolute paths.
+        const summary = {
+          status: result.status,
+          run_id: result.run_id,
+          namespace: result.namespace,
+          logical_repo: result.logical_repo,
+          source_revision: result.source_revision,
+          acquisition_mode: result.acquisition_mode,
+          manifest_id: result.manifest_id,
+          descriptor_sha256: result.descriptor_sha256,
+          chunk_index: result.chunk_index,
+          phase_timings_ms: result.phase_timings_ms,
+          graphify: result.graphify,
+        };
+        process.stdout.write(`${JSON.stringify(summary)}\n`);
         return 0;
       }
       case "persist-candidate": {
