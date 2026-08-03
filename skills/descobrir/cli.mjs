@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * Descobrir skill CLI — setup | setup-status | prepare | finalize | persist-candidate | accept | export
+ * Descobrir skill CLI — setup | setup-status | prepare | finalize |
+ *   status | cleanup | persist-candidate | accept | export
  * Zero dependencies. SQLite is canonical; JSON is export-only.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { canonicalizeCandidatePackage } from "./src/candidate-package.mjs";
@@ -16,6 +19,11 @@ import {
 } from "./src/graphify-tool.mjs";
 import { prepareRun } from "./src/prepare-run.mjs";
 import {
+  cleanupRun,
+  cleanupStaleRuns,
+  listRuns,
+} from "./src/run-cleanup.mjs";
+import {
   acceptBaseline,
   exportPackage,
   findCandidateByHash,
@@ -23,6 +31,7 @@ import {
   packageToExportJson,
   persistCandidate,
 } from "./src/store.mjs";
+import { ensureWorktreeAbsent } from "./src/worktree.mjs";
 
 /**
  * @param {string[]} argv
@@ -76,6 +85,27 @@ function optionalInt(name, flags) {
 }
 
 /**
+ * Resolve the XDG cache runs dir exactly the way runtime-config.mjs does, so
+ * status/cleanup operate on the same run roots prepare created.
+ * @returns {string}
+ */
+function resolveRunsDir() {
+  const home = process.env.HOME || homedir();
+  if (typeof home !== "string" || home === "") {
+    throw new Error("HOME is not set");
+  }
+  const cacheHome =
+    typeof process.env.XDG_CACHE_HOME === "string" &&
+    process.env.XDG_CACHE_HOME !== ""
+      ? process.env.XDG_CACHE_HOME
+      : join(home, ".cache");
+  if (!isAbsolute(cacheHome)) {
+    throw new Error("XDG_CACHE_HOME must be absolute when set");
+  }
+  return join(cacheHome, "descobrir", "runs");
+}
+
+/**
  * @param {string[]} argv process.argv.slice(2)
  * @returns {Promise<number>} exit code
  */
@@ -83,7 +113,7 @@ export async function main(argv) {
   try {
     if (!Array.isArray(argv) || argv.length === 0) {
       throw new Error(
-        "usage: setup | setup-status | prepare | finalize | persist-candidate | accept | export",
+        "usage: setup | setup-status | prepare | finalize | status | cleanup | persist-candidate | accept | export",
       );
     }
     const [command, ...rest] = argv;
@@ -269,6 +299,42 @@ export async function main(argv) {
         } finally {
           store.close();
         }
+        return 0;
+      }
+      case "status": {
+        const runsDir =
+          typeof flags["runs-dir"] === "string" && flags["runs-dir"] !== ""
+            ? flags["runs-dir"]
+            : resolveRunsDir();
+        const result = listRuns(runsDir);
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        return 0;
+      }
+      case "cleanup": {
+        const runsDir =
+          typeof flags["runs-dir"] === "string" && flags["runs-dir"] !== ""
+            ? flags["runs-dir"]
+            : resolveRunsDir();
+        const runId =
+          typeof flags["run-id"] === "string" && flags["run-id"] !== ""
+            ? flags["run-id"]
+            : null;
+        const stale = flags["stale"] === true;
+        if ((runId !== null) === stale) {
+          throw new Error("cleanup requires exactly one of --run-id <id> or --stale");
+        }
+        /** @type {{ force?: boolean, sourceRepo?: string, ensureWorktreeAbsent?: typeof ensureWorktreeAbsent }} */
+        const opts = {
+          ensureWorktreeAbsent,
+          ...(flags.force === true ? { force: true } : {}),
+          ...(typeof flags["source-repo"] === "string" && flags["source-repo"] !== ""
+            ? { sourceRepo: flags["source-repo"] }
+            : {}),
+        };
+        const result = runId !== null
+          ? { mode: "run-id", result: cleanupRun(runsDir, runId, opts) }
+          : { mode: "stale", result: cleanupStaleRuns(runsDir, opts) };
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         return 0;
       }
       default:

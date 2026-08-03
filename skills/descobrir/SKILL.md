@@ -9,141 +9,190 @@ description: >
 
 # Descobrir — baseline candidate skill
 
-Project-local skill. Turns **isolated Graphify output** into a **constrained candidate package**, runs **deterministic guardrails**, and stores candidates / accepted baselines in **SQLite** (JSON is export-only).
+Operates a Git project in one invocation: it checks Graphify, prepares an isolated
+Graphify extraction, dispatches the deterministic chunks to the Explorer for semantic
+enrichment, finalizes a verified candidate, and persists it to the central SQLite
+store. The user supplies only project/config intent. No intermediate JSON is hand
+edited, and Graphify is invoked by the skill — never manually by the user.
 
-**Semantic LLM extraction is untrusted and stochastic.** Determinism applies only to: output shape, schema validation, canonical IDs, normalization, stable ordering, `canonical_graph_hash`, pinned-revision verification, CoverageReport derivation (`passed`/counts), and transaction behavior.
+**Semantic LLM extraction is untrusted and stochastic.** Determinism applies only to:
+output shape, schema validation, canonical IDs, normalization, stable ordering,
+`canonical_graph_hash`, pinned-revision verification, CoverageReport derivation
+(`passed`/counts), and transaction behavior.
 
-Do **not** mark claims `comprovado` without repository evidence verified at the pinned revision. Draft `status:"comprovado"` is downgraded unless `readAtRevision` verifies pinned bytes. Do **not** auto-accept. Acceptance is an explicit **Human Gate**.
+Do **not** mark claims `comprovado` without repository evidence verified at the
+pinned revision. Draft `status:"comprovado"` is downgraded unless `readAtRevision`
+verifies pinned bytes. Do **not** auto-accept. Acceptance is an explicit
+**Human Gate**.
 
-Contracts (source of truth): `workflows/descobrir/contracts/*.schema.json`  
-Flow: `workflows/descobrir/FLOW.md`  
+Contracts (source of truth): `workflows/descobrir/contracts/*.schema.json`
+Flow: `workflows/descobrir/FLOW.md`
 Store ADR: `docs/adr/0005-descobrir-skill-sqlite-store.md`
 
-## Graphify isolation runbook (path B — mandatory)
+## One-invocation protocol (strict phase order)
 
-Graphify **must never mutate the source repository**.
+The `/descobrir` command and the protocol module (`src/descobrir-protocol.mjs`)
+implement a strict, observable phase order. Never skip, reorder, or run a later
+phase before an earlier one completes:
 
-1. Resolve logical repo + pinned `source_revision` (Fase 1).
-2. Create an **ephemeral copy or git worktree** of the target at that revision.
-3. Run Graphify **only inside the ephemeral tree**. Capture `graph.json` (and any native artifacts) from there.
-4. Tear down the ephemeral tree. The source working tree must be unchanged.
-5. LLM Explorer reasons over `graph.json` (+ optional native artifact inventory) and emits a **draft candidate** (contract below).
-6. Run guardrails: `canonicalizeCandidatePackage` (or CLI `persist-candidate`, which canonicalizes drafts).
-7. Persist to SQLite. Publish only after Human Gate `accept`.
+1. **setup-status** — `cli.mjs setup-status`. Verify `graphifyy==0.9.32` is
+   installed via `uv tool`. On missing or version mismatch, **stop** and emit
+   the setup instruction (`cli.mjs setup`). Do **not** fall back to a manual
+   Graphify command.
+2. **prepare** — `cli.mjs prepare --namespace <ns> --logical-repo <repo>
+   --project-path <path> [--source-revision <sha>] [--db <path>]`. Creates the
+   isolated worktree, runs `graphify extract --code-only --no-cluster --out`
+   inside it, projects stable chunks, builds the Artifact Manifest and run
+   descriptor, then removes the worktree. Emits `{status:"prepared", run_id,
+   chunk_index, manifest_id, descriptor_sha256, phase_timings_ms, graphify}` —
+   no absolute paths in stdout.
+3. **Explorer chunk dispatch** — for each chunk in `chunk_index.chunks`, dispatch
+   one Explorer subagent. The subagent reads its chunk file under the run root
+   and writes exactly one payload to `explorer/payloads/<chunk_key>.json` using
+   the closed Explorer contract below. No intermediate JSON is authored by the
+   user. Failed chunks (those returning `retryable` blockers such as a banned
+   authority field) are **re-dispatched in place** up to **3 attempts**; chunks
+   that already succeeded are never re-dispatched.
+4. **finalize** — `cli.mjs finalize --run-root <run_root> --db <db.sqlite>
+   --source-repo <path>`. Validates prepared artifacts, merges payloads,
+   re-derives evidence/ids/hash/coverage from the pinned Git reader, and
+   persists the candidate idempotently. Returns either
+   `{status:"finalized", candidate_id, canonical_graph_hash, coverage}` or
+   `{status:"blocked", exit_code:2, blockers, retryable_chunk_keys}` with no
+   DB write on blocked.
 
-Production code in this skill **does not invoke Graphify**. Isolation is an agent/operator obligation.
+**Completion criteria**
 
-### Preflight gate
+- Status `finalized` AND `coverage.repository_verified_percentage > 0` AND
+  `coverage.mutation_equivalent === true` → the candidate is persisted and
+  ready for the explicit Human Gate (`cli.mjs accept`).
+- Status `setup_required` → stop, surface the setup command, then resume from
+  phase 1.
+- Status `prepare_failed` → surface the cause; resume from phase 2 once fixed.
+- Status `blocked` (dispatch) → the `failed_chunk_keys` exhausted retries; the
+  run_id is preserved. Either re-dispatch with a corrected Explorer
+  instruction and re-run `finalize`, or `cleanup --run-id <run_id> --force`
+  to drop the run.
+- Status `finalize_blocked` → blockers list the offending chunk keys and the
+  offending field/locator. Re-dispatch only `retryable_chunk_keys`, then re-run
+  `finalize` (idempotent: no duplicate candidate is written).
 
-Before emitting JSON, require `namespace`, `logical_repo`, pinned `source_revision`, a complete Artifact Manifest for the isolated Graphify artifacts, gate `threshold`, and mutation evidence. If any input is absent, return only a blocker list: **do not emit a partial draft, placeholders, guessed hashes, or guessed identities**.
+**Recovery / cancellation**
 
-Artifact References point to the inventoried Native Artifact (for this path, normally `graph.json`), never directly to a source-code path. A source location becomes a Repository Reference only after verification against the pinned revision. Emit a relation only when both canonical endpoint records and its semantic granularity are supported; otherwise omit it and record the unresolved modeling gap instead of collapsing it into a self-edge or another invented relation.
+- If the protocol is interrupted (process killed, OpenCode session stopped,
+  user Cancel), inspect leftover runs with `cli.mjs status`, then
+  `cli.mjs cleanup --stale` to remove incomplete run roots, or
+  `cli.mjs cleanup --run-id <id> [--force] [--source-repo <repo>]` to remove a
+  specific run. Cleanup never touches SQLite candidates; it removes only run
+  scratch space and, when `--source-repo` is supplied, force-unregisters
+  leftover worktrees via the existing worktree helpers.
+- Source working tree is never mutated. Prepare captures pre/post snapshots and
+  asserts `mutation.equivalent === true`. A mutated source fails the run, never
+  the user's working tree.
 
 ## Explorer output contract (exact)
 
-Emit **one JSON object** (draft). Unknown fields are rejected. **No** `confidence`, `artifact_id`, prose scores, or invented endpoint/call-chain schemas.
+Emit **one JSON object** per chunk to `explorer/payloads/<chunk_key>.json`.
+Unknown fields are rejected. **No** `confidence`, `artifact_id`, prose scores,
+`id`, `status`, `evidence`, `canonical_graph_hash`, `path`, `uri`, absolute
+paths, raw source, or invented endpoint/call-chain schemas.
 
 ```json
 {
-  "namespace": "<knowledge-namespace>",
-  "logical_repo": "<single-token-logical-id>",
-  "source_revision": "<pinned-revision>",
-  "artifact_manifest": { /* artifact-manifest.schema.json */ },
+  "chunk_key": "<chunk_key from chunk_index>",
   "records": [
     {
+      "node_key": "<opaque node key from chunk>",
       "type": "Service",
       "natural_key": "billing",
       "name": "Billing",
       "summary": "short factual summary",
-      "attributes": {},
-      "status": "hipótese",
-      "evidence": [
-        {
-          "kind": "artifact",
-          "manifest_id": "<manifest id>",
-          "artifact_path": "relative/path",
-          "content_sha256": "<64 lowercase hex>",
-          "range": { "start_line": 1, "end_line": 1 }
-        }
-      ]
+      "attributes": {}
     }
   ],
   "relations": [
     {
+      "edge_key": "<opaque edge key from chunk>",
       "relation_type": "EXPOSES",
       "from_type": "Service",
       "from_natural_key": "billing",
       "to_type": "Endpoint",
-      "to_natural_key": "get:/billing",
-      "status": "hipótese",
-      "evidence": [ /* at least one artifact evidence */ ]
+      "to_natural_key": "get:/billing"
     }
-  ],
-  "coverage_report": {
-    "threshold": { /* gate thresholds — inputs only */ },
-    "mutation": { /* pre/post equivalence evidence */ },
-    "producer_baseline": { "declared_counts": {}, "indexed_counts": {}, "deltas": [] },
-    "freshness": { "source_revision": "<pinned-revision>" }
-  }
+  ]
 }
 ```
 
 Rules:
 
-- Prefer `natural_key` + `type`. Optional record `id` is **ignored as authority**.
-- Relations **must** supply `from_type`/`from_natural_key`/`to_type`/`to_natural_key`. Supplied `from_record`, `to_record`, and relation `id` are ignored as authority and always recomputed.
-- Emit `status:"hipótese"` by default. Draft `comprovado` is **not** trusted without injected pinned-revision verification.
-- Relation endpoints must exist in the same draft's record set (after ID recomputation).
-- Every artifact evidence item must resolve against `artifact_manifest` (id + path + hash + range).
-- Never embed secrets, env values, connection strings, raw source, absolute paths, or dirty-file contents.
-- `coverage_report` draft is a **closed input shape**: only `id`, `threshold`, `mutation`, `producer_baseline`, `repeatability`, `freshness`. Reject `passed`, `provenance`, `status_counts`, `schema_result`, `graph_index_id`, `artifact_manifest_id`, `namespace`, `source_revision`, `unresolved_ids`. Require `threshold` + `mutation`. Final report (including `passed`) is always recomputed.
-- Human Gate requires recomputed `passed === true` + approver.
+- Every record/relation MUST reference opaque keys present in the dispatched
+  chunk. Inventing keys, deriving IDs, or smuggling repository paths is a
+  `retryable` blocker.
+- Relation endpoints must exist in the merged record set after canonical ID
+  recomputation.
+- Relations must not be self-edges and must use a supported `relation_type`.
+- `chunk_key`, `node_key`, `edge_key` are the ONLY keys the Explorer supplies
+  that the deterministic stages treat as opaque references. Everything else
+  (canonical IDs, hashes, evidence, coverage, status, acceptance) is recomputed.
 
-## Guardrails (deterministic)
+## Guardrails (deterministic, owned by finalize)
 
-Module: `src/candidate-package.mjs` → `canonicalizeCandidatePackage(draft, { readAtRevision? })`
-
-- Reject banned/unknown fields (`confidence`, …).
+- Reject banned/unknown fields (`confidence`, `path`, `uri`, `evidence`, `id`,
+  `status`, `canonical_graph_hash`, …).
 - Recompute all canonical IDs; reject duplicates; sort by id.
-- Always recompute relation endpoints/ids from natural keys; reject missing natural-key fields.
-- Reject relations whose endpoints are missing from the record set; reject duplicate ids.
+- Recompute relation endpoints/ids from natural keys; reject missing natural-key
+  fields; reject relations whose endpoints are missing from the record set.
 - Reject artifact evidence that does not resolve against the manifest.
-- Downgrade draft `comprovado` → `hipótese` unless `readAtRevision` verifies repository evidence (via `repo-verifier`).
-- Validate every entity against `workflows/descobrir/contracts`.
+- Downgrade draft `comprovado` → `hipótese` unless `readAtRevision` verifies
+  repository evidence via the pinned Git reader.
 - Build `graph_index` and `canonical_graph_hash` (summary excluded from hash).
-- **Recompute** CoverageReport from closed draft inputs (`threshold`, `mutation`, producer maps, optional repeatability baseline).
-- `mutation.equivalent` is **recomputed** from stable canonical comparison of `pre`/`post` snapshots — caller boolean is never authority.
-- Same-key persist with divergent package JSON is **rejected** (collision); identical JSON is idempotent.
-- Draft must not include `graph_index` (always derived).
-- Store boundary asserts cross-document identity, index lists/counts, graph consistency, artifact resolution, hash, and recomputed coverage before write; `accept` re-runs integrity on stored JSON.
+- Recompute CoverageReport from closed inputs; never trust the Explorer for
+  `passed`, provenance, or coverage.
+- `mutation.equivalent` is recomputed from `pre`/`post` snapshots; the caller
+  boolean is never authority.
+- Same-key persist with divergent package JSON is rejected (collision);
+  identical JSON is idempotent (created=false).
 
-## SQLite store + CLI
+## CLI surface
 
 ```bash
-# Persist Explorer draft only (always canonicalized; no bypass heuristic)
-node skills/descobrir/cli.mjs persist-candidate --db <path.sqlite> --input <draft.json>
+# Protocol phases
+node skills/descobrir/cli.mjs setup-status
+node skills/descobrir/cli.mjs setup
+node skills/descobrir/cli.mjs prepare \
+  --namespace <ns> --logical-repo <repo> --project-path <path> \
+  [--source-revision <sha>] [--db <path>]
+node skills/descobrir/cli.mjs finalize \
+  --run-root <run_root> --db <db.sqlite> --source-repo <path>
 
-# Human Gate accept (requires passed=true + --approver)
-node skills/descobrir/cli.mjs accept --db <path.sqlite> \
+# Recovery
+node skills/descobrir/cli.mjs status
+node skills/descobrir/cli.mjs cleanup --stale
+node skills/descobrir/cli.mjs cleanup --run-id <id> [--force] [--source-repo <repo>]
+
+# Human Gate (only after explicit acceptance)
+node skills/descobrir/cli.mjs accept --db <store.sqlite> \
   --namespace <ns> --logical-repo <repo> --graph-hash <hex> --approver "Marley"
 
-# Export accepted baseline (JSON is audit/compat only)
-node skills/descobrir/cli.mjs export --db <path.sqlite> \
+# Audit/export (JSON is export-only; SQLite is canonical)
+node skills/descobrir/cli.mjs export --db <store.sqlite> \
   --namespace <ns> --logical-repo <repo> --accepted --output <out.json>
+
+# Legacy draft persist (canonicalizes but cannot verify repository bytes)
+node skills/descobrir/cli.mjs persist-candidate --db <store.sqlite> --input <draft.json>
 ```
 
-Store semantics:
+## Central store
 
+- DB: `${XDG_DATA_HOME:-~/.local/share}/descobrir/<namespace>.sqlite`, mode `0600`.
+- Run scratch: `${XDG_CACHE_HOME:-~/.cache}/descobrir/runs/<run_id>/`, mode `0700`.
 - Multiple candidates per namespace + logical repo (keyed by revision + graph hash).
 - One accepted baseline pointer per namespace + logical repo (atomic upsert).
-- Idempotent `persist-candidate` for the same key.
-- Namespace isolation on all queries.
-- DB file mode `0600` when created on disk.
+- Idempotent persist for the same key. Namespace isolation on all queries.
 
 ## Out of scope (this skill)
 
 - L1/L2 macro-flow, Neo4j, Docker, external LLM SDK
-- Invoking Graphify from production modules
 - Auto-accept, normalized entity/evidence SQL tables, prototype imports
 
 ## Tests
