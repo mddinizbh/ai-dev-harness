@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Descobrir skill CLI — persist-candidate | accept | export
+ * Descobrir skill CLI — setup | setup-status | persist-candidate | accept | export
  * Zero dependencies. SQLite is canonical; JSON is export-only.
  */
 
@@ -9,6 +9,10 @@ import { pathToFileURL } from "node:url";
 
 import { canonicalizeCandidatePackage } from "./src/candidate-package.mjs";
 import { sanitizeErrorMessage } from "./src/errors.mjs";
+import {
+  getGraphifyToolStatus,
+  setupGraphifyTool,
+} from "./src/graphify-tool.mjs";
 import {
   acceptBaseline,
   exportPackage,
@@ -61,12 +65,44 @@ function requireFlag(name, flags) {
 export async function main(argv) {
   try {
     if (!Array.isArray(argv) || argv.length === 0) {
-      throw new Error("usage: persist-candidate | accept | export");
+      throw new Error(
+        "usage: setup | setup-status | persist-candidate | accept | export",
+      );
     }
     const [command, ...rest] = argv;
     const flags = parseArgs(rest);
 
     switch (command) {
+      case "setup": {
+        const result = await setupGraphifyTool();
+        process.stdout.write(
+          `${JSON.stringify({
+            status: "ok",
+            installed: result.installed,
+            version: result.version,
+            matches_pin: result.matches_pin,
+            pinned_version: result.pinned_version,
+            package: result.package,
+            uv_available: result.uv_available,
+          })}\n`,
+        );
+        return 0;
+      }
+      case "setup-status": {
+        const result = await getGraphifyToolStatus();
+        process.stdout.write(
+          `${JSON.stringify({
+            installed: result.installed,
+            version: result.version,
+            matches_pin: result.matches_pin,
+            pinned_version: result.pinned_version,
+            package: result.package,
+            uv_available: result.uv_available,
+            setup_command: result.setup_command,
+          })}\n`,
+        );
+        return 0;
+      }
       case "persist-candidate": {
         const dbPath = requireFlag("db", flags);
         const inputPath = requireFlag("input", flags);
