@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Descobrir skill CLI — setup | setup-status | prepare | finalize |
- *   status | cleanup | persist-candidate | accept | export
+ *   status | cleanup | persist-candidate | accept | export | project-obsidian
  * Zero dependencies. SQLite is canonical; JSON is export-only.
  */
 
@@ -17,6 +17,7 @@ import {
   getGraphifyToolStatus,
   setupGraphifyTool,
 } from "./src/graphify-tool.mjs";
+import { projectAcceptedBaseline } from "./src/obsidian-projector.mjs";
 import { prepareRun } from "./src/prepare-run.mjs";
 import {
   cleanupRun,
@@ -113,7 +114,7 @@ export async function main(argv) {
   try {
     if (!Array.isArray(argv) || argv.length === 0) {
       throw new Error(
-        "usage: setup | setup-status | prepare | finalize | status | cleanup | persist-candidate | accept | export",
+        "usage: setup | setup-status | prepare | finalize | status | cleanup | persist-candidate | accept | export | project-obsidian",
       );
     }
     const [command, ...rest] = argv;
@@ -335,6 +336,26 @@ export async function main(argv) {
           ? { mode: "run-id", result: cleanupRun(runsDir, runId, opts) }
           : { mode: "stale", result: cleanupStaleRuns(runsDir, opts) };
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        return 0;
+      }
+      case "project-obsidian": {
+        const dbPath = requireFlag("db", flags);
+        const namespace = requireFlag("namespace", flags);
+        const logicalRepo = requireFlag("logical-repo", flags);
+        const outDir = requireFlag("out", flags);
+        const store = openStore(dbPath);
+        try {
+          const result = projectAcceptedBaseline(store, {
+            namespace,
+            logical_repo: logicalRepo,
+            out_dir: outDir,
+          });
+          process.stdout.write(
+            `${JSON.stringify({ status: "ok", summary: result.summary })}\n`,
+          );
+        } finally {
+          store.close();
+        }
         return 0;
       }
       default:
