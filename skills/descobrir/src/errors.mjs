@@ -103,6 +103,33 @@ export class GraphifyToolError extends DescobrirError {
   }
 }
 
+export class GraphifyVersionError extends DescobrirError {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "GraphifyVersionError";
+  }
+}
+
+export class GraphifyLoaderError extends DescobrirError {
+  /**
+   * @param {string} message
+   * @param {{ cause?: unknown }} [options]
+   */
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = "GraphifyLoaderError";
+  }
+}
+
+export class GraphifyProjectionError extends DescobrirError {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "GraphifyProjectionError";
+  }
+}
+
 /**
  * Sanitize error text for CLI stderr — strip absolute paths.
  * @param {unknown} err
