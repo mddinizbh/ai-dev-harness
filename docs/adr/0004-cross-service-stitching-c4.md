@@ -1,5 +1,6 @@
 ---
-status: proposed
+status: accepted
+note: L1 v1 implemented in skills/l1 (ADR 0007). L2+ still deferred.
 ---
 
 # ADR 0004 — Stitching cross-service e C4 emergente bottom-up

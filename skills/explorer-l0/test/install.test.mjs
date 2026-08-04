@@ -48,11 +48,15 @@ function tempHome() {
 }
 
 function skillLinkPath(home) {
-  return join(home, ".agents", "skills", "descobrir");
+  return join(home, ".agents", "skills", "explorer-l0");
 }
 
 function commandPath(home) {
-  return join(home, ".config", "opencode", "commands", "descobrir.md");
+  return join(home, ".config", "opencode", "commands", "explorer-l0.md");
+}
+
+function aliasSkillLinkPath(home) {
+  return join(home, ".agents", "skills", "descobrir");
 }
 
 beforeEach(() => {
@@ -91,7 +95,9 @@ describe("descobrir global install", () => {
     const cmd = readFileSync(commandPath(home), "utf8");
     assert.match(cmd, /\$ARGUMENTS/);
     assert.doesNotMatch(cmd, /TODO_PLACEHOLDER|FIXME_UNRESOLVED|<PROJECT>/);
-    assert.match(cmd, /descobrir-install-owned:v1/);
+    assert.match(cmd, /explorer-l0-install-owned:v1/);
+    // legacy alias also installed
+    assert.equal(lstatSync(aliasSkillLinkPath(home)).isSymbolicLink(), true);
 
     // live reference, not a stale snapshot copy
     assert.notEqual(lstatSync(link).isDirectory() && !lstatSync(link).isSymbolicLink(), true);

@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
- * Ownership-safe global OpenCode install for the Descobrir skill.
+ * Ownership-safe global OpenCode install for explorer-l0 (ex-Descobrir).
  *
- * install  — symlink ~/.agents/skills/descobrir → this skill root;
- *            write owned ~/.config/opencode/commands/descobrir.md
+ * install  — symlink ~/.agents/skills/explorer-l0 → this skill root;
+ *            also alias ~/.agents/skills/descobrir → same root;
+ *            write owned commands explorer-l0.md + descobrir.md (alias)
  * status   — report presence/ownership of those artifacts
  * uninstall— remove only owned artifacts
  *
  * Never copies a skill snapshot. Never overwrites foreign paths.
  * Paths resolve from this file and from HOME / XDG_CONFIG_HOME only.
+ * XDG data dir remains ~/.local/share/descobrir (legacy path, data compat).
  */
 
 import {
@@ -33,7 +35,9 @@ import { InstallConflictError, sanitizeErrorMessage } from "./src/errors.mjs";
 export { InstallConflictError };
 
 /** Marker embedded in the owned command template. */
-export const OWNERSHIP_MARKER = "descobrir-install-owned:v1";
+export const OWNERSHIP_MARKER = "explorer-l0-install-owned:v1";
+/** Legacy marker still accepted as owned for migration. */
+export const LEGACY_OWNERSHIP_MARKER = "descobrir-install-owned:v1";
 
 const RESTART_GUIDANCE =
   "Quit and restart OpenCode so skill and command discovery reload. Running sessions keep the previous config.";
@@ -76,8 +80,10 @@ export function installPaths() {
   const agentsSkillsDir = join(home, ".agents", "skills");
   const commandsDir = join(configHome, "opencode", "commands");
   return {
-    skillLink: join(agentsSkillsDir, "descobrir"),
-    commandFile: join(commandsDir, "descobrir.md"),
+    skillLink: join(agentsSkillsDir, "explorer-l0"),
+    aliasSkillLink: join(agentsSkillsDir, "descobrir"),
+    commandFile: join(commandsDir, "explorer-l0.md"),
+    aliasCommandFile: join(commandsDir, "descobrir.md"),
     agentsSkillsDir,
     commandsDir,
   };
@@ -168,25 +174,95 @@ export function inspectCommand(commandFile) {
   } catch {
     return { present: true, owned: false };
   }
-  return { present: true, owned: text.includes(OWNERSHIP_MARKER) };
+  return {
+    present: true,
+    owned:
+      text.includes(OWNERSHIP_MARKER) || text.includes(LEGACY_OWNERSHIP_MARKER),
+  };
 }
 
 /**
+ * @param {string} [fileName]
  * @returns {string}
  */
-function loadCommandTemplate() {
-  const templatePath = join(skillSourceRoot(), "commands", "descobrir.md");
+function loadCommandTemplate(fileName = "explorer-l0.md") {
+  const templatePath = join(skillSourceRoot(), "commands", fileName);
   if (!existsSync(templatePath)) {
-    throw new Error("repository command template missing: commands/descobrir.md");
+    throw new Error(`repository command template missing: commands/${fileName}`);
   }
   const text = readFileSync(templatePath, "utf8");
   if (!text.includes("$ARGUMENTS")) {
     throw new Error("command template must contain $ARGUMENTS");
   }
-  if (!text.includes(OWNERSHIP_MARKER)) {
-    throw new Error(`command template must contain ${OWNERSHIP_MARKER}`);
+  if (
+    !text.includes(OWNERSHIP_MARKER) &&
+    !text.includes(LEGACY_OWNERSHIP_MARKER)
+  ) {
+    throw new Error(
+      `command template must contain ${OWNERSHIP_MARKER} (or legacy marker)`,
+    );
   }
   return text;
+}
+
+/**
+ * Ensure owned symlink skillLink → sourceRoot.
+ * @param {string} skillLink
+ * @param {string} sourceRoot
+ * @param {string} home
+ */
+function ensureSkillLink(skillLink, sourceRoot, home) {
+  assertUnderRoot(home, skillLink);
+  const skillInfo = inspectSkill(skillLink, sourceRoot);
+  if (skillInfo.present && !skillInfo.owned) {
+    throw new InstallConflictError(
+      `skill path exists and is not owned by this installer: ${skillLink}`,
+    );
+  }
+  let action = "unchanged";
+  if (!skillInfo.present) {
+    atomicSymlink(sourceRoot, skillLink);
+    action = "created";
+  } else if (skillInfo.owned) {
+    let current;
+    try {
+      current = realpathSync(skillLink);
+    } catch {
+      current = null;
+    }
+    if (current !== sourceRoot) {
+      atomicSymlink(sourceRoot, skillLink);
+      action = "updated";
+    }
+  }
+  return action;
+}
+
+/**
+ * @param {string} commandFile
+ * @param {string} template
+ * @param {string} configHome
+ */
+function ensureCommandFile(commandFile, template, configHome) {
+  assertUnderRoot(configHome, commandFile);
+  const commandInfo = inspectCommand(commandFile);
+  if (commandInfo.present && !commandInfo.owned) {
+    throw new InstallConflictError(
+      `command path exists and is not owned by this installer: ${commandFile}`,
+    );
+  }
+  let action = "unchanged";
+  if (!commandInfo.present) {
+    atomicWriteFile(commandFile, template);
+    action = "created";
+  } else if (commandInfo.owned) {
+    const existing = readFileSync(commandFile, "utf8");
+    if (existing !== template) {
+      atomicWriteFile(commandFile, template);
+      action = "updated";
+    }
+  }
+  return action;
 }
 
 /**
@@ -258,60 +334,48 @@ export function install() {
   const home = resolveHome();
   const configHome = resolveConfigHome();
 
-  assertUnderRoot(home, paths.skillLink);
-  assertUnderRoot(configHome, paths.commandFile);
-
   if (!existsSync(join(sourceRoot, "SKILL.md"))) {
     throw new Error("skill source missing SKILL.md");
   }
 
-  const skillInfo = inspectSkill(paths.skillLink, sourceRoot);
-  if (skillInfo.present && !skillInfo.owned) {
-    throw new InstallConflictError(
-      `skill path exists and is not owned by this installer: ${paths.skillLink}`,
-    );
-  }
+  const primaryTemplate = loadCommandTemplate("explorer-l0.md");
+  const aliasTemplate = loadCommandTemplate("descobrir.md");
 
-  const commandInfo = inspectCommand(paths.commandFile);
-  if (commandInfo.present && !commandInfo.owned) {
-    throw new InstallConflictError(
-      `command path exists and is not owned by this installer: ${paths.commandFile}`,
-    );
-  }
-
-  const template = loadCommandTemplate();
-
-  let skillAction = "unchanged";
-  if (!skillInfo.present) {
-    atomicSymlink(sourceRoot, paths.skillLink);
-    skillAction = "created";
-  } else if (skillInfo.owned) {
-    // ensure link still points at live source (repair if needed)
-    let current;
-    try {
-      current = realpathSync(paths.skillLink);
-    } catch {
-      current = null;
+  // Preflight conflicts before mutating anything
+  for (const link of [paths.skillLink, paths.aliasSkillLink]) {
+    const info = inspectSkill(link, sourceRoot);
+    if (info.present && !info.owned) {
+      throw new InstallConflictError(
+        `skill path exists and is not owned by this installer: ${link}`,
+      );
     }
-    if (current !== sourceRoot) {
-      atomicSymlink(sourceRoot, paths.skillLink);
-      skillAction = "updated";
+  }
+  for (const file of [paths.commandFile, paths.aliasCommandFile]) {
+    const info = inspectCommand(file);
+    if (info.present && !info.owned) {
+      throw new InstallConflictError(
+        `command path exists and is not owned by this installer: ${file}`,
+      );
     }
   }
 
-  let commandAction = "unchanged";
-  if (!commandInfo.present) {
-    atomicWriteFile(paths.commandFile, template);
-    commandAction = "created";
-  } else if (commandInfo.owned) {
-    const existing = readFileSync(paths.commandFile, "utf8");
-    if (existing !== template) {
-      atomicWriteFile(paths.commandFile, template);
-      commandAction = "updated";
-    }
-  }
+  const skillAction = ensureSkillLink(paths.skillLink, sourceRoot, home);
+  const aliasSkillAction = ensureSkillLink(
+    paths.aliasSkillLink,
+    sourceRoot,
+    home,
+  );
+  const commandAction = ensureCommandFile(
+    paths.commandFile,
+    primaryTemplate,
+    configHome,
+  );
+  const aliasCommandAction = ensureCommandFile(
+    paths.aliasCommandFile,
+    aliasTemplate,
+    configHome,
+  );
 
-  // post-condition: both owned
   const skillAfter = inspectSkill(paths.skillLink, sourceRoot);
   const commandAfter = inspectCommand(paths.commandFile);
   if (!skillAfter.owned || !commandAfter.owned) {
@@ -323,6 +387,10 @@ export function install() {
     skill: {
       path: paths.skillLink,
       target: sourceRoot,
+      alias_path: paths.aliasSkillLink,
+      alias_action: aliasSkillAction,
+      alias_command_path: paths.aliasCommandFile,
+      alias_command_action: aliasCommandAction,
       owned: true,
       action: skillAction,
     },
@@ -385,31 +453,46 @@ export function uninstall() {
   const configHome = resolveConfigHome();
 
   assertUnderRoot(home, paths.skillLink);
+  assertUnderRoot(home, paths.aliasSkillLink);
   assertUnderRoot(configHome, paths.commandFile);
+  assertUnderRoot(configHome, paths.aliasCommandFile);
 
-  const skillInfo = inspectSkill(paths.skillLink, sourceRoot);
-  let skillAction = "absent";
-  if (skillInfo.present && skillInfo.owned) {
-    // remove only the symlink itself — never recursive delete of source
-    rmSync(paths.skillLink, { force: true });
-    skillAction = "removed";
-  } else if (skillInfo.present && !skillInfo.owned) {
-    skillAction = "skipped_foreign";
+  /** @param {string} link */
+  function removeOwnedSkill(link) {
+    const info = inspectSkill(link, sourceRoot);
+    if (info.present && info.owned) {
+      rmSync(link, { force: true });
+      return "removed";
+    }
+    if (info.present && !info.owned) return "skipped_foreign";
+    return "absent";
   }
-
-  const commandInfo = inspectCommand(paths.commandFile);
-  let commandAction = "absent";
-  if (commandInfo.present && commandInfo.owned) {
-    rmSync(paths.commandFile, { force: true });
-    commandAction = "removed";
-  } else if (commandInfo.present && !commandInfo.owned) {
-    commandAction = "skipped_foreign";
+  /** @param {string} file */
+  function removeOwnedCommand(file) {
+    const info = inspectCommand(file);
+    if (info.present && info.owned) {
+      rmSync(file, { force: true });
+      return "removed";
+    }
+    if (info.present && !info.owned) return "skipped_foreign";
+    return "absent";
   }
 
   return {
     ok: true,
-    skill: { path: paths.skillLink, action: skillAction },
-    command: { path: paths.commandFile, action: commandAction },
+    skill: { path: paths.skillLink, action: removeOwnedSkill(paths.skillLink) },
+    command: {
+      path: paths.commandFile,
+      action: removeOwnedCommand(paths.commandFile),
+    },
+    alias_skill: {
+      path: paths.aliasSkillLink,
+      action: removeOwnedSkill(paths.aliasSkillLink),
+    },
+    alias_command: {
+      path: paths.aliasCommandFile,
+      action: removeOwnedCommand(paths.aliasCommandFile),
+    },
     restart_guidance: RESTART_GUIDANCE,
   };
 }

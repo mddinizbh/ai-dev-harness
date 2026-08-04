@@ -45,94 +45,95 @@ Graphify + Explorer + guardrails + SQLite + (opcional) projeção Obsidian.
 |---|---|
 | Gate A (contrato) | Aprovado por Marley em 2026-08-02 |
 | Protótipo descartável `prototypes/descobrir-v1/` | Existe — **não** é runtime de produção |
-| Skill de produção `skills/descobrir/` | **L0 operacional entregue** (install, setup, prepare, protocol, finalize, accept, project-obsidian, status, cleanup, E2E fake) |
+| Skill **`explorer-l0`** (alias `/descobrir`) | L0 index (Graphify + Explorer + finalize + accept) |
+| Skill **`explorer-l1`** (alias `/l1`, `/graph-system`) | L1 stitch + callers/callees |
+| Skill **`explorer-l2`** | JourneySpec bind + gaps |
+| Skill **`explorer-query`** | ensure ↑ · answer/context-pack ↓ · generate-human (repo) |
 | Human Gate (baseline aceito) | Explícito; **nunca** auto-accept |
-| L1/L2 / Neo4j / Docker | **Deferred** |
+| L3 / Neo4j / Docker / grafo incremental | **Deferred** |
 
-### Escopo L0 vs deferred
+### Escopo explorer-l* 
 
 | Item | Estado |
 |---|---|
-| Install global + `/descobrir` one-invocation | Entregue |
+| `explorer-l0` (+ alias descobrir) | Entregue |
 | Graphify pinado `0.9.32` em worktree isolada | Entregue |
 | prepare / finalize determinísticos | Entregue |
-| Explorer só semântica | Entregue |
-| SQLite central por namespace (XDG) | Entregue |
-| Obsidian one-way (baseline aceito) | Entregue |
-| L1/L2 stitching, Neo4j, Docker | Deferred |
+| `export-frontier` L0 → L1 | Entregue |
+| `explorer-l1` stitch (git ou frontier-dir) | Entregue |
+| `explorer-l2` journey bind | Entregue |
+| `explorer-query` ensure / answer / generate-human | Entregue |
+| Projeção humana `.explorer/L{N}.md` on-demand | Entregue |
+| L3, incremental update, Neo4j | Deferred |
 
 ### Operação rápida
 
 ```bash
-# 1) Instalar skill/comando global (symlink live; reinicie o OpenCode depois)
-node skills/descobrir/install.mjs install
+# 1) Install skills (recomendado — um comando)
+node packages/explorer-skills/bin/opencode-explorer.mjs install
+node packages/explorer-skills/bin/opencode-explorer.mjs setup
+
+# ou, depois de publicar no npm:
+#   npx opencode-explorer install && npx opencode-explorer setup
+
+# (alternativa manual)
+# node skills/explorer-l0/install.mjs install
+# node skills/explorer-l1/install.mjs install
 
 # 2) Setup Graphify pinado (uma vez por máquina)
-node skills/descobrir/cli.mjs setup
-node skills/descobrir/cli.mjs setup-status
+node skills/explorer-l0/cli.mjs setup
+node skills/explorer-l0/cli.mjs setup-status
 
-# 3) No OpenCode (qualquer repo Git): /descobrir <projeto>
-#    Ou CLI determinística:
-node skills/descobrir/cli.mjs prepare \
+# 3) L0 index (OpenCode: /explorer-l0  ou alias /descobrir)
+node skills/explorer-l0/cli.mjs prepare \
   --namespace <ns> --logical-repo <repo> --project-path <abs-git-root>
-# Explorer grava payloads em <run_root>/explorer/payloads/
-node skills/descobrir/cli.mjs finalize \
+node skills/explorer-l0/cli.mjs finalize \
   --run-root <abs-run-root> --db <store.sqlite> --source-repo <abs-git-root>
-node skills/descobrir/cli.mjs accept --db <store.sqlite> \
+node skills/explorer-l0/cli.mjs accept --db <store.sqlite> \
   --candidate-id <id> --approver "Marley"
-node skills/descobrir/cli.mjs project-obsidian --db <store.sqlite> \
-  --namespace <ns> --logical-repo <repo> --out <projection-root>
 
-# Status / recovery (não toca SQLite de candidates)
-node skills/descobrir/cli.mjs status
-node skills/descobrir/cli.mjs cleanup --stale
+# 4) Pipeline hermético (fixtures — sem monorepo)
+node --test skills/explorer-l0/test/frontier-export.test.mjs
+node --test skills/explorer-l1/test/*.test.mjs
+node --test skills/explorer-l2/test/*.test.mjs
+node --test skills/explorer-query/test/*.test.mjs
+node skills/explorer-query/e2e/run.mjs
 
-# Testes + E2E hermético (sem rede)
-node --test skills/descobrir/test/*.test.mjs
-node skills/descobrir/e2e/run.mjs --graphify fake
+# 5) Query / human projection (on-demand)
+# node skills/explorer-query/cli.mjs answer --edges edges.json --system-namespace sys
+# node skills/explorer-query/cli.mjs generate-human --repo-root . --layer l1 --from-pack pack.json
 ```
 
 **Paths centrais (defaults):**
 
 - DB: `${XDG_DATA_HOME:-~/.local/share}/descobrir/<namespace>.sqlite` (`0600`)
 - Runs: `${XDG_CACHE_HOME:-~/.cache}/descobrir/runs/<run-id>/`
+- L1 edges: tabelas `system_edges` / `system_stitch_runs` no mesmo DB (ou `--system-db`)
 - Após `install`/`uninstall`: **quit e restart OpenCode**
 
 **Exit codes:** `0` ok · `1` erro infra/typed · `2` blockers semânticos no finalize (sem write no DB)
 
 ### Navegação Descobrir
 
-- Skill: [`skills/descobrir/SKILL.md`](skills/descobrir/SKILL.md)
-- Operador: [`skills/descobrir/OPERATOR.md`](skills/descobrir/OPERATOR.md)
-- Fluxo: [`workflows/descobrir/FLOW.md`](workflows/descobrir/FLOW.md)
-- Contratos: [`workflows/descobrir/contracts/`](workflows/descobrir/contracts/)
-- E2E: [`skills/descobrir/e2e/run.mjs`](skills/descobrir/e2e/run.mjs)
-- ADR 0002–0006 em [`docs/adr/`](docs/adr/)
-- Protótipo (descartável): [`prototypes/descobrir-v1/`](prototypes/descobrir-v1/)
+- L0: [`skills/explorer-l0/SKILL.md`](skills/explorer-l0/SKILL.md)
+- L1: [`skills/explorer-l1/SKILL.md`](skills/explorer-l1/SKILL.md)
+- L2: [`skills/explorer-l2/SKILL.md`](skills/explorer-l2/SKILL.md)
+- Query: [`skills/explorer-query/SKILL.md`](skills/explorer-query/SKILL.md)
+- ADR 0008: [`docs/adr/0008-explorer-l-pipeline.md`](docs/adr/0008-explorer-l-pipeline.md)
+- Plano: [`.omo/plans/pkg-pipeline-l0-l1-l2-context.md`](.omo/plans/pkg-pipeline-l0-l1-l2-context.md)
+- E2E hermético: [`skills/explorer-query/e2e/run.mjs`](skills/explorer-query/e2e/run.mjs)
 
 ## Mapa de arquivos
 
 ```
 ai-dev-harness/
-├── README.md
-├── docs/
-│   ├── domain/glossary.md
-│   └── adr/
-│       ├── 0001-… 0005-…
-│       └── 0006-descobrir-operational-orchestration.md
 ├── skills/
-│   └── descobrir/
-│       ├── SKILL.md
-│       ├── OPERATOR.md
-│       ├── install.mjs
-│       ├── cli.mjs
-│       ├── commands/descobrir.md
-│       ├── e2e/run.mjs
-│       ├── src/
-│       └── test/
-├── workflows/descobrir/contracts/
-├── prototypes/descobrir-v1/
-└── examples/nori/
+│   ├── explorer-l0/      # index micro (ex-descobrir)
+│   ├── explorer-l1/      # system edges (ex-l1)
+│   ├── explorer-l2/      # journeys
+│   └── explorer-query/   # ensure + answer + generate-human
+├── docs/adr/0008-explorer-l-pipeline.md
+└── …
 ```
 
 ## Navegação

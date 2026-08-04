@@ -1,13 +1,14 @@
 ---
-name: descobrir
+name: explorer-l0
 description: >
-  Use when indexing a repository into the Project Knowledge Graph baseline candidate,
-  running Descobrir, persisting or accepting a knowledge baseline, exporting a candidate
-  package, or when the user mentions descobrir, baseline candidate, Graphify isolation,
-  or Human Gate acceptance of structural knowledge records.
+  Explorer L0 — index one Git repository into a Project Knowledge Graph baseline
+  candidate (Graphify + Explorer semantics + finalize + accept). Use when the user
+  says /explorer-l0, /descobrir (alias), baseline candidate, Graphify isolation,
+  or Human Gate acceptance of structural knowledge records. Not L1 stitch (/explorer-l1)
+  and not query orchestration (/explorer-query).
 ---
 
-# Descobrir — baseline candidate skill
+# explorer-l0 — baseline candidate (micro / L0)
 
 Operates a Git project in one invocation: it checks Graphify, prepares an isolated
 Graphify extraction, dispatches the deterministic chunks to the Explorer for semantic

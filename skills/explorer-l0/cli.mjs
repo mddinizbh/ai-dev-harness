@@ -5,7 +5,7 @@
  * Zero dependencies. SQLite is canonical; JSON is export-only.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -32,6 +32,7 @@ import {
   packageToExportJson,
   persistCandidate,
 } from "./src/store.mjs";
+import { exportFrontierFile, frontierFromPackage } from "./src/frontier-export.mjs";
 import { ensureWorktreeAbsent } from "./src/worktree.mjs";
 
 /**
@@ -295,6 +296,54 @@ export async function main(argv) {
             `${JSON.stringify({
               status: "ok",
               canonical_graph_hash: pkg.graph_index.canonical_graph_hash,
+            })}\n`,
+          );
+        } finally {
+          store.close();
+        }
+        return 0;
+      }
+      case "export-frontier": {
+        // From --package JSON file OR accepted baseline in --db
+        const outDir = requireFlag("output-dir", flags);
+        if (typeof flags.package === "string") {
+          const r = exportFrontierFile(flags.package, outDir);
+          process.stdout.write(`${JSON.stringify({ status: "ok", ...r })}\n`);
+          return 0;
+        }
+        const dbPath = requireFlag("db", flags);
+        const store = openStore(dbPath);
+        try {
+          const pkg = exportPackage(store, {
+            accepted: true,
+            namespace: requireFlag("namespace", flags),
+            logical_repo: requireFlag("logical-repo", flags),
+          });
+          const facts = frontierFromPackage(pkg);
+          mkdirSync(outDir, { recursive: true, mode: 0o700 });
+          const outFile = join(outDir, `${pkg.logical_repo}.frontier.json`);
+          writeFileSync(
+            outFile,
+            `${JSON.stringify(
+              {
+                namespace: pkg.namespace,
+                logical_repo: pkg.logical_repo,
+                source_revision: pkg.source_revision,
+                exported_at: new Date().toISOString(),
+                fact_count: facts.length,
+                facts,
+              },
+              null,
+              2,
+            )}\n`,
+            { mode: 0o600 },
+          );
+          process.stdout.write(
+            `${JSON.stringify({
+              status: "ok",
+              output: outFile,
+              fact_count: facts.length,
+              logical_repo: pkg.logical_repo,
             })}\n`,
           );
         } finally {

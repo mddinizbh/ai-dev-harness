@@ -1,0 +1,196 @@
+/**
+ * SQLite store for L1 system edges. Does not modify L0 candidate_packages.
+ */
+
+import { DatabaseSync } from "node:sqlite";
+import { chmodSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { SystemStoreError } from "./errors.mjs";
+import { stablePretty } from "../../explorer-l0/src/stable-json.mjs";
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS system_edges (
+  edge_id TEXT PRIMARY KEY,
+  system_namespace TEXT NOT NULL,
+  from_namespace TEXT NOT NULL,
+  from_logical_repo TEXT NOT NULL,
+  from_fact_id TEXT NOT NULL,
+  to_namespace TEXT NOT NULL,
+  to_logical_repo TEXT NOT NULL,
+  to_fact_id TEXT NOT NULL,
+  contract_key TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  evidence_class TEXT NOT NULL,
+  match_kind TEXT NOT NULL,
+  score REAL NOT NULL,
+  config_key TEXT,
+  edge_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_system_edges_ns ON system_edges(system_namespace);
+CREATE INDEX IF NOT EXISTS idx_system_edges_from ON system_edges(system_namespace, from_logical_repo);
+CREATE INDEX IF NOT EXISTS idx_system_edges_to ON system_edges(system_namespace, to_logical_repo);
+CREATE INDEX IF NOT EXISTS idx_system_edges_contract ON system_edges(system_namespace, contract_key);
+
+CREATE TABLE IF NOT EXISTS system_stitch_runs (
+  run_id TEXT PRIMARY KEY,
+  system_namespace TEXT NOT NULL,
+  repos_json TEXT NOT NULL,
+  edge_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+`;
+
+/**
+ * @param {string} dbPath
+ */
+export function openSystemStore(dbPath) {
+  if (typeof dbPath !== "string" || dbPath === "") {
+    throw new SystemStoreError("dbPath required");
+  }
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(dbPath);
+  db.exec(SCHEMA);
+  try {
+    chmodSync(dbPath, 0o600);
+  } catch {
+    // best-effort
+  }
+  return {
+    _db: db,
+    dbPath,
+    close() {
+      db.close();
+    },
+  };
+}
+
+/**
+ * @param {ReturnType<typeof openSystemStore>} store
+ * @param {string} systemNamespace
+ * @param {import("./matcher.mjs").SystemEdge[]} edges
+ * @returns {{ inserted: number, skipped: number }}
+ */
+export function persistSystemEdges(store, systemNamespace, edges) {
+  if (!systemNamespace || typeof systemNamespace !== "string") {
+    throw new SystemStoreError("systemNamespace required");
+  }
+  if (!Array.isArray(edges)) throw new SystemStoreError("edges must be array");
+
+  const insert = store._db.prepare(`
+    INSERT OR IGNORE INTO system_edges (
+      edge_id, system_namespace,
+      from_namespace, from_logical_repo, from_fact_id,
+      to_namespace, to_logical_repo, to_fact_id,
+      contract_key, method, path, evidence_class, match_kind, score, config_key,
+      edge_json, created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `);
+
+  let inserted = 0;
+  let skipped = 0;
+  const now = new Date().toISOString();
+  const tx = store._db.prepare("BEGIN");
+  const commit = store._db.prepare("COMMIT");
+  const rollback = store._db.prepare("ROLLBACK");
+  tx.run();
+  try {
+    for (const e of edges) {
+      const r = insert.run(
+        e.edge_id,
+        systemNamespace,
+        e.from.namespace,
+        e.from.logical_repo,
+        e.from.fact_id,
+        e.to.namespace,
+        e.to.logical_repo,
+        e.to.fact_id,
+        e.contract_key,
+        e.method,
+        e.path,
+        e.evidence_class,
+        e.match_kind,
+        e.score,
+        e.config_key ?? null,
+        stablePretty(e),
+        now,
+      );
+      if (r.changes === 1) inserted += 1;
+      else skipped += 1;
+    }
+    commit.run();
+  } catch (err) {
+    rollback.run();
+    throw new SystemStoreError("persist failed", { cause: err });
+  }
+  return { inserted, skipped };
+}
+
+/**
+ * @param {ReturnType<typeof openSystemStore>} store
+ * @param {{ system_namespace: string, from_repo?: string, to_repo?: string, contract_key?: string }} q
+ */
+export function listSystemEdges(store, q) {
+  let sql = `SELECT edge_json FROM system_edges WHERE system_namespace = ?`;
+  /** @type {unknown[]} */
+  const params = [q.system_namespace];
+  if (q.from_repo) {
+    sql += ` AND from_logical_repo = ?`;
+    params.push(q.from_repo);
+  }
+  if (q.to_repo) {
+    sql += ` AND to_logical_repo = ?`;
+    params.push(q.to_repo);
+  }
+  if (q.contract_key) {
+    sql += ` AND contract_key = ?`;
+    params.push(q.contract_key);
+  }
+  sql += ` ORDER BY score DESC, edge_id ASC`;
+  return store._db
+    .prepare(sql)
+    .all(...params)
+    .map((row) => JSON.parse(/** @type {string} */ (row.edge_json)));
+}
+
+/**
+ * @param {ReturnType<typeof openSystemStore>} store
+ * @param {string} systemNamespace
+ * @param {string} logicalRepo
+ * @param {"from"|"to"|"both"} [side]
+ */
+export function edgesForRepo(store, systemNamespace, logicalRepo, side = "both") {
+  if (side === "from") {
+    return listSystemEdges(store, { system_namespace: systemNamespace, from_repo: logicalRepo });
+  }
+  if (side === "to") {
+    return listSystemEdges(store, { system_namespace: systemNamespace, to_repo: logicalRepo });
+  }
+  const a = listSystemEdges(store, { system_namespace: systemNamespace, from_repo: logicalRepo });
+  const b = listSystemEdges(store, { system_namespace: systemNamespace, to_repo: logicalRepo });
+  const byId = new Map();
+  for (const e of [...a, ...b]) byId.set(e.edge_id, e);
+  return [...byId.values()];
+}
+
+/**
+ * @param {ReturnType<typeof openSystemStore>} store
+ * @param {string} systemNamespace
+ */
+export function systemStats(store, systemNamespace) {
+  const row = store._db
+    .prepare(
+      `SELECT COUNT(*) AS n,
+              COUNT(DISTINCT from_logical_repo) AS from_repos,
+              COUNT(DISTINCT to_logical_repo) AS to_repos
+       FROM system_edges WHERE system_namespace = ?`,
+    )
+    .get(systemNamespace);
+  return {
+    system_namespace: systemNamespace,
+    edge_count: row?.n ?? 0,
+    from_repos: row?.from_repos ?? 0,
+    to_repos: row?.to_repos ?? 0,
+  };
+}
