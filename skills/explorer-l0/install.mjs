@@ -278,7 +278,11 @@ function atomicSymlink(target, linkPath) {
     `.descobrir-link.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`,
   );
   try {
-    symlinkSync(target, tmpName);
+    symlinkSync(
+      target,
+      tmpName,
+      process.platform === "win32" ? "junction" : null,
+    );
     renameSync(tmpName, linkPath);
   } catch (err) {
     try {

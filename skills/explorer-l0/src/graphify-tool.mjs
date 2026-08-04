@@ -241,18 +241,31 @@ function pathDirs(env = process.env) {
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {string | null}
  */
-function findOnPath(name, env = process.env) {
-  for (const dir of pathDirs(env)) {
-    const candidate = join(dir, name);
-    try {
-      accessSync(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {
-      // continue
-    }
-  }
-  return null;
+/**
+ * Windows resolves executables by extension (PATHEXT). A bare `name` never
+ * exists on disk there, so expand it into the concrete candidates.
+ * @param {string} name
+ * @returns {string[]}
+ */
+function executableNames(name) {
+  if (process.platform !== "win32") return [name];
+  return [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name];
 }
+
+ function findOnPath(name, env = process.env) {
+   for (const dir of pathDirs(env)) {
+     for (const exeName of executableNames(name)) {
+       const candidate = join(dir, exeName);
+       try {
+         accessSync(candidate, fsConstants.X_OK);
+         return candidate;
+       } catch {
+         // continue
+       }
+     }
+   }
+   return null;
+ }
 
 /**
  * @param {NodeJS.ProcessEnv} [env]
@@ -274,11 +287,15 @@ function resolveUvBin(env = process.env) {
 export function defaultResolveGraphifyExecutable(env = process.env) {
   const candidates = [];
   if (typeof env.UV_TOOL_BIN_DIR === "string" && env.UV_TOOL_BIN_DIR !== "") {
-    candidates.push(join(env.UV_TOOL_BIN_DIR, "graphify"));
+    for (const exeName of executableNames("graphify")) {
+      candidates.push(join(env.UV_TOOL_BIN_DIR, exeName));
+    }
   }
-  const home = env.HOME || homedir();
+  const home = env.HOME || env.USERPROFILE || homedir();
   if (home) {
-    candidates.push(join(home, ".local", "bin", "graphify"));
+    for (const exeName of executableNames("graphify")) {
+      candidates.push(join(home, ".local", "bin", exeName));
+    }
   }
   const fromPath = findOnPath("graphify", env);
   if (fromPath) candidates.push(fromPath);

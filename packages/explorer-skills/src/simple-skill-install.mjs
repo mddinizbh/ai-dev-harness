@@ -51,7 +51,11 @@ function atomicSymlink(target, linkPath) {
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   const tmp = join(dir, `.ox-link.${process.pid}.${Date.now()}`);
   try {
-    symlinkSync(target, tmp);
+    symlinkSync(
+      target,
+      tmp,
+      process.platform === "win32" ? "junction" : null,
+    );
     renameSync(tmp, linkPath);
   } catch (e) {
     try {

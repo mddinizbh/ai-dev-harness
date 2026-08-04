@@ -4,8 +4,8 @@
   "description": "Install Explorer L0–L2 + query skills for OpenCode (Project Knowledge Graph)",
   "type": "module",
   "bin": {
-    "opencode-explorer": "./bin/opencode-explorer.mjs",
-    "explorer-skills": "./bin/opencode-explorer.mjs"
+    "opencode-explorer": "bin/opencode-explorer.js",
+    "explorer-skills": "bin/opencode-explorer.js"
   },
   "files": [
     "bin",
