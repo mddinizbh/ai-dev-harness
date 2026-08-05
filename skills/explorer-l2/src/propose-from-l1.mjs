@@ -1,6 +1,7 @@
 /**
  * Bottom-up L2 step 1: propose JourneySpec skeleton from L1 system edges only.
  * Does NOT invent domain narrative (partner defaults, plate rules, etc.).
+ * Names/descriptions aim to be human-readable integration indexes.
  */
 
 /**
@@ -12,6 +13,7 @@
  * @param {{
  *   system_namespace: string,
  *   journey_id?: string,
+ *   title?: string,
  *   from_repo?: string,
  *   to_repo?: string,
  *   min_score?: number,
@@ -35,7 +37,6 @@ export function proposeFromL1(edges, opts) {
     list = list.filter((e) => e.to?.logical_repo === opts.to_repo);
   }
 
-  // Stable sort
   list = [...list].sort((a, b) => {
     const ak = `${a.from?.logical_repo || ""}\0${a.to?.logical_repo || ""}\0${a.contract_key || ""}`;
     const bk = `${b.from?.logical_repo || ""}\0${b.to?.logical_repo || ""}\0${b.contract_key || ""}`;
@@ -59,7 +60,6 @@ export function proposeFromL1(edges, opts) {
     if (groupBy === "edge") {
       gkey = e.edge_id || `${from}->${to}:${e.contract_key}`;
     } else {
-      // contract_prefix: method + first 2 path segments after empty
       const prefix = contractPrefix(e.method, e.path || e.contract_key);
       gkey = `${from}->${to}::${prefix}`;
     }
@@ -69,63 +69,79 @@ export function proposeFromL1(edges, opts) {
 
   const steps = [];
   let i = 0;
-  for (const [gkey, groupEdges] of groups) {
+  for (const [, groupEdges] of groups) {
     i += 1;
     const head = groupEdges[0];
     const from = head.from?.logical_repo;
     const to = head.to?.logical_repo;
     const prefix = contractPrefix(head.method, head.path || head.contract_key);
+    const pathHint = pathTopic(head.path || head.contract_key);
     const scores = groupEdges.map((e) => e.score ?? 0);
     const minS = Math.min(...scores);
     const maxS = Math.max(...scores);
-    const stepId = slugStep(from, to, prefix, i);
+    const scoreLabel = minS === maxS ? String(maxS) : `${minS}–${maxS}`;
+    const cfg = [
+      ...new Set(groupEdges.map((e) => e.config_key).filter(Boolean)),
+    ];
+    const stepId = humanStepId(from, to, pathHint, i);
+    const title = humanStepTitle(from, to, pathHint, head.method);
 
     steps.push({
       id: stepId,
+      title,
       trigger: "http-sync",
       from,
       to,
       contract_prefix: prefix,
-      description:
-        `L1-proposed hop ${from} → ${to} (${prefix}). ` +
-        `${groupEdges.length} edge(s), score ${minS === maxS ? maxS : `${minS}-${maxS}`}. ` +
-        `Domain semantics NOT inferred — enrich-from-l0 required.`,
+      description: humanStepDescription({
+        from,
+        to,
+        pathHint,
+        method: head.method,
+        prefix,
+        edgeCount: groupEdges.length,
+        scoreLabel,
+        configKeys: cfg,
+        evidence: flattenEvidence(groupEdges),
+      }),
       provenance: {
         source: "l1",
+        kind: "integration-hop",
         edge_ids: groupEdges.map((e) => e.edge_id).filter(Boolean),
-        match_kinds: [...new Set(groupEdges.map((e) => e.match_kind).filter(Boolean))],
-        config_keys: [
-          ...new Set(groupEdges.map((e) => e.config_key).filter(Boolean)),
+        match_kinds: [
+          ...new Set(groupEdges.map((e) => e.match_kind).filter(Boolean)),
         ],
+        config_keys: cfg,
         evidence: flattenEvidence(groupEdges),
       },
     });
   }
 
-  const pairBit =
-    opts.from_repo && opts.to_repo
-      ? `${opts.from_repo}--${opts.to_repo}`
-      : opts.from_repo
-        ? `from-${opts.from_repo}`
-        : opts.to_repo
-          ? `to-${opts.to_repo}`
-          : "all";
+  const fromR = opts.from_repo;
+  const toR = opts.to_repo;
   const journeyId =
-    opts.journey_id ||
-    `journey-l1-${slug(opts.system_namespace)}-${slug(pairBit)}`;
+    opts.journey_id || defaultJourneyId(opts.system_namespace, fromR, toR);
+  const title =
+    opts.title || defaultJourneyTitle(fromR, toR, [...members].sort());
 
-  /** @type {JourneySpec & { pipeline?: object }} */
+  /** @type {JourneySpec & { title?: string, pipeline?: object }} */
   const spec = {
     id: journeyId,
+    title,
     system_namespace: opts.system_namespace,
     members: [...members].sort(),
-    description:
-      `Auto-proposed from L1 system_edges only (${list.length} edges → ${steps.length} steps). ` +
-      `Bottom-up pipeline: propose-from-l1 → enrich-from-l0 → bind. ` +
-      `Do NOT treat as domain truth until L0 enrichment.`,
+    description: humanJourneyDescription({
+      title,
+      fromR,
+      toR,
+      edgeCount: list.length,
+      stepCount: steps.length,
+      minScore,
+    }),
     steps,
     pipeline: {
       stage: "propose-from-l1",
+      kind: "integration-index",
       edge_count: list.length,
       step_count: steps.length,
       min_score: minScore,
@@ -154,7 +170,6 @@ export function proposeFromL1(edges, opts) {
  */
 export function contractPrefix(method, pathOrContract) {
   const raw = pathOrContract || "";
-  // contract_key often "GET /path"
   let path = raw;
   let m = method || "";
   const sp = raw.indexOf(" ");
@@ -166,6 +181,179 @@ export function contractPrefix(method, pathOrContract) {
   const keep = parts.slice(0, Math.min(3, parts.length));
   const pref = "/" + keep.join("/");
   return m ? `${m} ${pref}` : pref;
+}
+
+/**
+ * Short topic from path for ids/titles: bradesco-mg-debits, api-debits, etc.
+ * @param {string|undefined} pathOrContract
+ */
+export function pathTopic(pathOrContract) {
+  const raw = pathOrContract || "";
+  let path = raw;
+  const sp = raw.indexOf(" ");
+  if (sp > 0 && /^[A-Z]+$/.test(raw.slice(0, sp))) {
+    path = raw.slice(sp + 1);
+  }
+  const parts = path
+    .split("/")
+    .filter(Boolean)
+    .filter((p) => p !== "{param}" && !p.startsWith("{"));
+  // drop noisy prefixes
+  const skip = new Set(["private", "api", "v1", "v2"]);
+  const meaningful = parts.filter((p) => !skip.has(p.toLowerCase()));
+  const take = (meaningful.length ? meaningful : parts).slice(0, 3);
+  return take.join("-") || "http";
+}
+
+/**
+ * @param {object} p
+ */
+function humanStepTitle(from, to, pathHint, method) {
+  const m = method || "HTTP";
+  const topic = pathHint.replace(/-/g, " ");
+  return `${shortRepo(from)} → ${shortRepo(to)}: ${m} ${topic}`;
+}
+
+/**
+ * @param {{
+ *   from?: string,
+ *   to?: string,
+ *   pathHint: string,
+ *   method?: string,
+ *   prefix: string,
+ *   edgeCount: number,
+ *   scoreLabel: string,
+ *   configKeys: string[],
+ *   evidence: object[],
+ * }} p
+ */
+function humanStepDescription(p) {
+  const lines = [];
+  lines.push(
+    `Chamada HTTP ${p.method || ""}`.trim() +
+      ` de **${shortRepo(p.from)}** para **${shortRepo(p.to)}**`,
+  );
+  lines.push(`rota (grupo): \`${p.prefix}\``);
+  if (p.edgeCount > 1) {
+    lines.push(`${p.edgeCount} contratos L1 neste grupo`);
+  }
+  lines.push(`confiança L1: score ${p.scoreLabel}`);
+  if (p.configKeys.length) {
+    lines.push(`config: ${p.configKeys.map((c) => `\`${c}\``).join(", ")}`);
+  }
+  const files = [
+    ...new Set(
+      (p.evidence || [])
+        .map((e) => e.file)
+        .filter(Boolean)
+        .map((f) => f.split("/").slice(-2).join("/")),
+    ),
+  ].slice(0, 4);
+  if (files.length) {
+    lines.push(`evidência: ${files.join(", ")}`);
+  }
+  lines.push(
+    "Índice de integração (não é fluxo de negócio completo); semântica de domínio só após enrich L0 + leitura de body nos hotspots",
+  );
+  return lines.join(". ") + ".";
+}
+
+/**
+ * @param {{
+ *   title: string,
+ *   fromR?: string,
+ *   toR?: string,
+ *   edgeCount: number,
+ *   stepCount: number,
+ *   minScore: number,
+ * }} p
+ */
+function humanJourneyDescription(p) {
+  const pair =
+    p.fromR && p.toR
+      ? `entre **${shortRepo(p.fromR)}** e **${shortRepo(p.toR)}**`
+      : p.fromR
+        ? `a partir de **${shortRepo(p.fromR)}**`
+        : p.toR
+          ? `em direção a **${shortRepo(p.toR)}**`
+          : "no system namespace";
+  return (
+    `${p.title}. ` +
+    `Índice de hops HTTP ${pair}, gerado só a partir do L1 ` +
+    `(${p.edgeCount} edges → ${p.stepCount} steps` +
+    (p.minScore > 0 ? `, score ≥ ${p.minScore}` : "") +
+    `). ` +
+    `Não substitui jornada de domínio (consulta/liquidação/UF). ` +
+    `Use para blast radius de contrato e como esqueleto antes do enrich L0.`
+  );
+}
+
+/**
+ * @param {string|undefined} systemNs
+ * @param {string|undefined} fromR
+ * @param {string|undefined} toR
+ */
+function defaultJourneyId(systemNs, fromR, toR) {
+  if (fromR && toR) {
+    return `integration-${slug(shortRepo(fromR))}-to-${slug(shortRepo(toR))}`;
+  }
+  if (fromR) return `integration-from-${slug(shortRepo(fromR))}`;
+  if (toR) return `integration-to-${slug(shortRepo(toR))}`;
+  return `integration-${slug(systemNs || "system")}`;
+}
+
+/**
+ * @param {string|undefined} fromR
+ * @param {string|undefined} toR
+ * @param {string[]} members
+ */
+function defaultJourneyTitle(fromR, toR, members) {
+  if (fromR && toR) {
+    return `Integração ${shortRepo(fromR)} → ${shortRepo(toR)}`;
+  }
+  if (fromR) return `Integrações a partir de ${shortRepo(fromR)}`;
+  if (toR) return `Integrações para ${shortRepo(toR)}`;
+  if (members.length) {
+    return `Integrações: ${members.map(shortRepo).join(", ")}`;
+  }
+  return "Índice de integrações L1";
+}
+
+/**
+ * @param {string|undefined} from
+ * @param {string|undefined} to
+ * @param {string} pathHint
+ * @param {number} i
+ */
+function humanStepId(from, to, pathHint, i) {
+  // integration-tax-tpc-api-debits-01
+  const a = slug(shortRepo(from || "src"));
+  const b = slug(shortRepo(to || "dst"));
+  const t = slug(pathHint).slice(0, 32);
+  return `${a}-to-${b}-${t || "hop"}-${String(i).padStart(2, "0")}`;
+}
+
+/**
+ * Short display name for a logical_repo.
+ * tax-provider-controller → tpc; zul-tax → tax; tax-provider-rj → rj
+ * @param {string|undefined} repo
+ */
+export function shortRepo(repo) {
+  if (!repo) return "?";
+  const r = String(repo);
+  const aliases = {
+    "tax-provider-controller": "tpc",
+    "tax-provider-rj": "rj",
+    "zul-tax": "tax",
+  };
+  if (aliases[r]) return aliases[r];
+  // generic: last segment, strip common prefixes
+  const base = r.split("/").pop() || r;
+  return base
+    .replace(/^tax-provider-/, "")
+    .replace(/^zul-/, "")
+    .replace(/-service$/, "")
+    .replace(/-provider$/, "") || base;
 }
 
 /**
@@ -203,15 +391,4 @@ function slug(s) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 48);
-}
-
-/**
- * @param {string|undefined} from
- * @param {string|undefined} to
- * @param {string} prefix
- * @param {number} i
- */
-function slugStep(from, to, prefix, i) {
-  const p = slug(prefix.replace(/\//g, "-"));
-  return `l1-${slug(from || "x")}--${slug(to || "y")}--${p || "hop"}-${String(i).padStart(2, "0")}`;
 }

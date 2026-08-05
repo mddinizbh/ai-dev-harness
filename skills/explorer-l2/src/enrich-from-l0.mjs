@@ -131,15 +131,20 @@ export function enrichFromL0(spec, opts) {
     );
 
     if (hotspots.length > 0) {
+      const names = hotspots
+        .slice(0, 5)
+        .map((h) => h.name)
+        .join(", ");
       stepWarnings.push(
-        `body_read_required: ${hotspots.map((h) => `${h.repo}:${h.name}`).join(", ")} — ` +
-          `L0 anchors name only; do NOT claim partner/UF/canary rules without reading method body`,
+        `Ler body antes de claim de domínio: ${names}` +
+          (hotspots.length > 5 ? "…" : "") +
+          " (L0 só ancora o nome do método)",
       );
     }
 
     if (deduped.length === 0 && step.trigger === "http-sync") {
       stepWarnings.push(
-        "no_l0_anchors_near_evidence — edge exists in L1 but L0 had no Method/Service on evidence files",
+        "Sem Method/Service L0 nos arquivos da evidence desta edge",
       );
     }
 
@@ -147,28 +152,34 @@ export function enrichFromL0(spec, opts) {
       warnings.push({ step_id: step.id, warning: w });
     }
 
-    const enrichedDesc =
-      (step.description || "") +
-      (deduped.length
-        ? ` L0 anchors (${deduped.length}): ` +
-          deduped
-            .slice(0, 6)
-            .map((a) => `${a.type}:${a.name}`)
-            .join(", ") +
-          (deduped.length > 6 ? "…" : "") +
-          "."
-        : " L0: no anchors found on evidence files.") +
-      (hotspots.length
-        ? " WARNING: hotspot method(s) require body read before domain claims."
-        : "");
+    const baseDesc = step.description || "";
+    let l0Note = "";
+    if (deduped.length) {
+      const names = deduped
+        .slice(0, 5)
+        .map((a) => a.name)
+        .join(", ");
+      l0Note =
+        ` Código próximo (L0): ${names}` +
+        (deduped.length > 5 ? "…" : "") +
+        ".";
+      if (hotspots.length) {
+        l0Note +=
+          " Atenção: há métodos sensíveis (retrieve/pay/partner) — não inferir regra de negócio só pelo nome.";
+      }
+    } else {
+      l0Note = " Nenhum símbolo L0 achado nos arquivos da evidence.";
+    }
 
     steps.push({
       ...step,
-      description: enrichedDesc,
+      description: baseDesc + l0Note,
       provenance: {
         ...(step.provenance || {}),
         source:
-          step.provenance?.source === "l1" ? "l1+l0" : step.provenance?.source || "l0",
+          step.provenance?.source === "l1"
+            ? "l1+l0"
+            : step.provenance?.source || "l0",
         l0_anchors: deduped,
         l0_hotspots: hotspots.map((h) => ({
           repo: h.repo,
@@ -180,24 +191,31 @@ export function enrichFromL0(spec, opts) {
     });
   }
 
-  // Pipeline gate summary
+  // Pipeline gate summary (process rules — not Estapar-specific claims)
   const claims_blocked = [
-    "Do not set partner default (RENDIMENTO/BRADESCO) from L1 alone",
-    "Do not set plate canary rules without reading useController/choosePartner body",
-    "Do not claim pay path equals retrieve path without L0 pay* anchors + body",
+    "Não definir partner default só com L1",
+    "Não definir regra de placa/canário sem ler body (ex.: useController/choosePartner)",
+    "Não assumir que pay e retrieve usam o mesmo hop sem evidência L0 + body",
   ];
+
+  const repoList = Object.keys(packages).sort();
+  const journeyDesc =
+    (spec.description || "").replace(/\s+$/, "") +
+    (repoList.length
+      ? ` Símbolos L0 anexados a partir de: ${repoList.join(", ")}.`
+      : " Sem packages L0 aceitos para enriquecer.") +
+    (warnings.length
+      ? ` ${warnings.length} aviso(s) de hotspot/leitura de body.`
+      : "");
 
   const out = {
     ...spec,
     steps,
-    description:
-      (spec.description || "") +
-      ` Enriched from L0 accepted packages (${Object.keys(packages).join(", ") || "none"}).` +
-      ` Warnings: ${warnings.length}.`,
+    description: journeyDesc,
     pipeline: {
       ...(spec.pipeline || {}),
       stage: "enrich-from-l0",
-      l0_repos: Object.keys(packages).sort(),
+      l0_repos: repoList,
       warning_count: warnings.length,
       claims_blocked_until_body_read: claims_blocked,
     },

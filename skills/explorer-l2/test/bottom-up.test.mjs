@@ -61,8 +61,13 @@ describe("propose-from-l1", () => {
     assert.equal(spec.steps[0].from, "zul-tax");
     assert.equal(spec.steps[0].to, "tax-provider-controller");
     assert.equal(spec.steps[0].provenance.source, "l1");
-    assert.ok(spec.steps[0].description.includes("NOT inferred"));
+    assert.ok(spec.title?.includes("tax") || spec.title?.includes("tpc"));
+    assert.ok(spec.id.startsWith("integration-") || spec.id === "journey-test-tpc");
+    assert.ok(spec.steps[0].description.includes("HTTP"));
+    assert.ok(spec.steps[0].id.includes("to-"));
     assert.ok(!/RENDIMENTO|default partner/i.test(JSON.stringify(spec)));
+    // no robotic pipeline dump as the only description
+    assert.ok(!/^Auto-proposed from L1/i.test(spec.description));
   });
 });
 
