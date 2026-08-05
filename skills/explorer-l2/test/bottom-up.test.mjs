@@ -1,0 +1,186 @@
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { enrichFromL0 } from "../src/enrich-from-l0.mjs";
+import { proposeFromL1 } from "../src/propose-from-l1.mjs";
+import { synthesizeJourney } from "../src/synthesize.mjs";
+
+const edges = [
+  {
+    edge_id: "l1:tpc",
+    from: { logical_repo: "zul-tax", namespace: "estapar", fact_id: "a" },
+    to: {
+      logical_repo: "tax-provider-controller",
+      namespace: "estapar",
+      fact_id: "b",
+    },
+    contract_key: "GET /api/debits/{param}/category/{param}/renavam/{param}",
+    method: "GET",
+    path: "/api/debits/{param}/category/{param}/renavam/{param}",
+    match_kind: "config_binding",
+    score: 0.95,
+    config_key: "PROVIDERCONTROLLER_API_URL",
+    evidence: [
+      {
+        side: "from",
+        file: "src/main/kotlin/com/zuldigital/tax/provider/TaxProviderControllerClient.kt",
+        line: 30,
+        snippet: "retrieve",
+      },
+      {
+        side: "to",
+        file: "src/main/java/br/com/zuldigital/taxprovidercontroller/controller/DebitsController.java",
+        line: 28,
+        snippet: "fetchDebits",
+      },
+    ],
+  },
+  {
+    edge_id: "l1:weak",
+    from: { logical_repo: "tax-provider-rj", namespace: "estapar", fact_id: "c" },
+    to: { logical_repo: "zul-tax", namespace: "estapar", fact_id: "d" },
+    contract_key: "GET /private/celcoin/balance",
+    method: "GET",
+    path: "/private/celcoin/balance",
+    match_kind: "path_contract",
+    score: 0.55,
+    evidence: [],
+  },
+];
+
+describe("propose-from-l1", () => {
+  test("builds steps only from L1 edges, no domain claims", () => {
+    const { spec, stats } = proposeFromL1(edges, {
+      system_namespace: "estapar-system",
+      from_repo: "zul-tax",
+      to_repo: "tax-provider-controller",
+      min_score: 0.9,
+      journey_id: "journey-test-tpc",
+    });
+    assert.equal(stats.filtered_edges, 1);
+    assert.equal(spec.steps.length, 1);
+    assert.equal(spec.steps[0].from, "zul-tax");
+    assert.equal(spec.steps[0].to, "tax-provider-controller");
+    assert.equal(spec.steps[0].provenance.source, "l1");
+    assert.ok(spec.steps[0].description.includes("NOT inferred"));
+    assert.ok(!/RENDIMENTO|default partner/i.test(JSON.stringify(spec)));
+  });
+});
+
+describe("enrich-from-l0", () => {
+  test("anchors methods on evidence files and flags hotspots", () => {
+    const { spec: draft } = proposeFromL1(edges, {
+      system_namespace: "estapar-system",
+      from_repo: "zul-tax",
+      to_repo: "tax-provider-controller",
+      min_score: 0.9,
+    });
+    const packages = {
+      "zul-tax": {
+        records: [
+          {
+            id: "method:1",
+            type: "Method",
+            name: "retrieveDebits()",
+            summary: "Method retrieveDebits() at L30",
+            status: "comprovado",
+            attributes: {
+              source_file:
+                "src/main/kotlin/com/zuldigital/tax/provider/TaxProviderControllerClient.kt",
+            },
+          },
+          {
+            id: "method:2",
+            type: "Method",
+            name: "choosePartner()",
+            summary: "Method choosePartner() at L12",
+            status: "comprovado",
+            attributes: {
+              source_file:
+                "src/main/kotlin/com/zuldigital/tax/helper/PartnerHelper.kt",
+            },
+          },
+        ],
+      },
+      "tax-provider-controller": {
+        records: [
+          {
+            id: "method:3",
+            type: "Method",
+            name: "fetchDebits()",
+            summary: "Method fetchDebits() at L28",
+            status: "comprovado",
+            attributes: {
+              source_file:
+                "src/main/java/br/com/zuldigital/taxprovidercontroller/controller/DebitsController.java",
+            },
+          },
+        ],
+      },
+    };
+    const { spec, warnings, stats } = enrichFromL0(draft, {
+      packages_by_repo: packages,
+    });
+    assert.ok(stats.steps_with_anchors >= 1);
+    const step = spec.steps[0];
+    assert.ok((step.provenance.l0_anchors || []).length >= 1);
+    assert.ok(
+      (step.provenance.l0_anchors || []).some((a) => a.name.includes("retrieveDebits")),
+    );
+    assert.ok(
+      (step.provenance.l0_anchors || []).some((a) => a.name.includes("fetchDebits")),
+    );
+    // choosePartner is hotspot in same provider dir tree may or may not attach;
+    // body_read_required should fire if hotspot present
+    assert.equal(spec.pipeline.stage, "enrich-from-l0");
+    assert.ok(
+      (spec.enrichment.claims_blocked_until_body_read || []).length >= 1,
+    );
+    assert.ok(Array.isArray(warnings));
+  });
+});
+
+describe("synthesize", () => {
+  test("runs full pipeline and binds L1 steps", () => {
+    const packages = {
+      "zul-tax": {
+        records: [
+          {
+            type: "Method",
+            name: "retrieveDebits()",
+            summary: "x",
+            attributes: {
+              source_file:
+                "src/main/kotlin/com/zuldigital/tax/provider/TaxProviderControllerClient.kt",
+            },
+          },
+        ],
+      },
+      "tax-provider-controller": {
+        records: [
+          {
+            type: "Method",
+            name: "fetchDebits()",
+            summary: "y",
+            attributes: {
+              source_file:
+                "src/main/java/br/com/zuldigital/taxprovidercontroller/controller/DebitsController.java",
+            },
+          },
+        ],
+      },
+    };
+    const result = synthesizeJourney({
+      edges,
+      system_namespace: "estapar-system",
+      journey_id: "journey-synth-tpc",
+      from_repo: "zul-tax",
+      to_repo: "tax-provider-controller",
+      min_score: 0.9,
+      packages_by_repo: packages,
+    });
+    assert.equal(result.bind.steps_bound, 1);
+    assert.equal(result.bind.steps_gap, 0);
+    assert.equal(result.bind.status, "complete");
+    assert.ok(result.pipeline.includes("propose-from-l1"));
+  });
+});
