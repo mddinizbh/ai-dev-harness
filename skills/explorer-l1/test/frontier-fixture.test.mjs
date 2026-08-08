@@ -3,9 +3,11 @@ import { describe, test } from "node:test";
 import { dedupeFrontier } from "../src/frontier-extract.mjs";
 import { matchFrontiers } from "../src/matcher.mjs";
 import { contractKey } from "../src/path-normalize.mjs";
+import { makeFrontierFactId } from "../../explorer-l0/src/layered-id.mjs";
 
 /**
  * Synthetic Estapar-shaped facts (no real monorepo in unit CI).
+ * As of ADR 0009 every fact id is built by the shared `makeFrontierFactId`.
  */
 describe("frontier fixture Estapar-shaped", () => {
   test("zul-tax outbound + controller inbound match on debits contract", () => {
@@ -13,6 +15,24 @@ describe("frontier fixture Estapar-shaped", () => {
       "GET",
       "/api/debits/{state}/category/{category}/renavam/{renavam}",
     );
+    const zulOutId = makeFrontierFactId({
+      kind: "http_outbound",
+      namespace: "estapar",
+      logical_repo: "zul-tax",
+      source_revision: "abc",
+      identity_key: ck,
+      file: "TaxProviderControllerClient.kt",
+      line: 30,
+    });
+    const ctlInId = makeFrontierFactId({
+      kind: "http_inbound",
+      namespace: "estapar",
+      logical_repo: "tax-provider-controller",
+      source_revision: "def",
+      identity_key: ck,
+      file: "DebitsController.java",
+      line: 28,
+    });
     const zul = dedupeFrontier([
       {
         kind: "http_outbound",
@@ -26,7 +46,7 @@ describe("frontier fixture Estapar-shaped", () => {
         file: "TaxProviderControllerClient.kt",
         line: 30,
         evidence_snippet: 'val url = "$taxProviderControllerURL/api/debits/..."',
-        id: "ff:out:debits",
+        id: zulOutId,
       },
     ]);
     const ctl = dedupeFrontier([
@@ -42,7 +62,7 @@ describe("frontier fixture Estapar-shaped", () => {
         line: 28,
         evidence_snippet:
           '@GetMapping("/{state}/category/{category}/renavam/{renavam}")',
-        id: "ff:in:debits",
+        id: ctlInId,
       },
     ]);
     assert.equal(zul.length, 1);
@@ -51,5 +71,9 @@ describe("frontier fixture Estapar-shaped", () => {
     assert.equal(edges.length, 1);
     assert.equal(edges[0].match_kind, "config_binding");
     assert.match(edges[0].contract_key, /debits/);
+    // ADR 0009: edge_id is l1:edge:<32-hex>; endpoints reference l0:ff:*.
+    assert.match(edges[0].edge_id, /^l1:edge:[a-f0-9]{32}$/);
+    assert.match(edges[0].from.fact_id, /^l0:ff:http_outbound:[a-f0-9]{16}$/);
+    assert.match(edges[0].to.fact_id, /^l0:ff:http_inbound:[a-f0-9]{16}$/);
   });
 });

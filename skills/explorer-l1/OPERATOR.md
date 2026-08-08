@@ -3,7 +3,8 @@
 ## What
 
 Cross-service stitch on **accepted** Descobrir L0 baselines. Writes
-`system_edges` / `system_stitch_runs` only.
+`system_edges` / `system_stitch_runs` only. Edges may be `http-sync`,
+`webhook`, `cron` or `queue`; `internal` continuity belongs to L2/L0.
 
 ## Install
 
@@ -16,31 +17,31 @@ node skills/l1/install.mjs status
 ## Estapar proof
 
 ```bash
+CRON=/Users/marleydiniz/IdeaProjects/Estapar/zonaazul-cron
 ZUL=/Users/marleydiniz/IdeaProjects/Estapar/zul-tax
-CTL=/Users/marleydiniz/IdeaProjects/Estapar/tax-provider-controller
+RJ=/Users/marleydiniz/IdeaProjects/Estapar/tax-provider-rj
 
-node skills/l1/cli.mjs stitch \
+node skills/explorer-l1/cli.mjs stitch \
   --namespace estapar \
   --system-namespace estapar-system \
-  --repos "zul-tax=$ZUL,tax-provider-controller=$CTL" \
-  --pair zul-tax->tax-provider-controller \
+  --repos "zonaazul-cron=$CRON,zul-tax=$ZUL,tax-provider-rj=$RJ" \
   --full
 
-node skills/l1/cli.mjs callers \
+node skills/explorer-l1/cli.mjs callers \
   --namespace estapar --system-namespace estapar-system \
-  --repo tax-provider-controller
+  --repo tax-provider-rj
 ```
 
 Or:
 
 ```bash
-node skills/l1/e2e/estapar-pair.mjs
+node skills/explorer-l1/e2e/estapar-pair.mjs
 ```
 
 ## Tests
 
 ```bash
-node --test skills/l1/test/*.test.mjs
+node --test skills/explorer-l1/test/*.test.mjs
 ```
 
 ## Safety
@@ -48,3 +49,4 @@ node --test skills/l1/test/*.test.mjs
 - Never mutates L0 `candidate_packages` / accept rows beyond sharing the DB file.
 - Never auto-accept.
 - Evidence = `contract-matched` only.
+- A connected edge proves the transport contract, not the business rule inside either body.

@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tableExists } from "../../explorer-l0/src/schema-versions.mjs";
 import { L1Error } from "./errors.mjs";
 import { extractFrontierFromGit } from "./frontier-extract.mjs";
 import { matchFrontiers } from "./matcher.mjs";
@@ -43,6 +44,7 @@ export function loadFrontiersFromDir(frontierDir) {
 export function loadAcceptedBaselines(l0DbPath, namespace, logicalRepos) {
   const db = new DatabaseSync(l0DbPath, { readOnly: true });
   try {
+    const { acceptedBaselines, candidatePackages } = resolveL0TableNames(db);
     /** @type {object[]} */
     const out = [];
     for (const repo of logicalRepos) {
@@ -50,8 +52,8 @@ export function loadAcceptedBaselines(l0DbPath, namespace, logicalRepos) {
         .prepare(
           `SELECT a.namespace, a.logical_repo, a.candidate_id, a.approver, a.accepted_at,
                   c.source_revision, c.canonical_graph_hash
-           FROM accepted_baselines a
-           JOIN candidate_packages c ON c.candidate_id = a.candidate_id
+           FROM ${acceptedBaselines} a
+           JOIN ${candidatePackages} c ON c.candidate_id = a.candidate_id
            WHERE a.namespace = ? AND a.logical_repo = ?`,
         )
         .get(namespace, repo);
@@ -64,6 +66,35 @@ export function loadAcceptedBaselines(l0DbPath, namespace, logicalRepos) {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Resolve a complete L0 schema generation without mutating the DB. A mixed or
+ * colliding pair is ambiguous and must be migrated before stitching.
+ *
+ * @param {InstanceType<typeof DatabaseSync>} db
+ */
+function resolveL0TableNames(db) {
+  const layeredCandidates = tableExists(db, "l0_candidate_packages");
+  const layeredAccepted = tableExists(db, "l0_accepted_baselines");
+  const legacyCandidates = tableExists(db, "candidate_packages");
+  const legacyAccepted = tableExists(db, "accepted_baselines");
+
+  if (layeredCandidates && layeredAccepted && !legacyCandidates && !legacyAccepted) {
+    return {
+      candidatePackages: "l0_candidate_packages",
+      acceptedBaselines: "l0_accepted_baselines",
+    };
+  }
+  if (legacyCandidates && legacyAccepted && !layeredCandidates && !layeredAccepted) {
+    return {
+      candidatePackages: "candidate_packages",
+      acceptedBaselines: "accepted_baselines",
+    };
+  }
+  throw new L1Error(
+    "L0 table names are missing, mixed, or colliding; run the layer-table migration first",
+  );
 }
 
 /**
@@ -177,6 +208,9 @@ export function stitchL1(input) {
         inbound: v.filter((x) => x.kind === "http_inbound").length,
         outbound: v.filter((x) => x.kind === "http_outbound").length,
         config: v.filter((x) => x.kind === "config_binding").length,
+        topic_publish: v.filter((x) => x.kind === "topic_publish").length,
+        topic_consume: v.filter((x) => x.kind === "topic_consume").length,
+        cron: v.filter((x) => x.trigger === "cron").length,
       },
     ]),
   );
@@ -211,7 +245,7 @@ export function stitchL1(input) {
       .slice(0, 16)}`;
     store._db
       .prepare(
-        `INSERT OR REPLACE INTO system_stitch_runs
+        `INSERT OR REPLACE INTO l1_system_stitch_runs
          (run_id, system_namespace, repos_json, edge_count, created_at)
          VALUES (?, ?, ?, ?, ?)`,
       )

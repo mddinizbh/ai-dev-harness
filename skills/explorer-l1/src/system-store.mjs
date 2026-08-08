@@ -1,15 +1,34 @@
 /**
- * SQLite store for L1 system edges. Does not modify L0 candidate_packages.
+ * SQLite store for L1 system edges. Does not modify l0_candidate_packages.
+ *
+ * ADR 0009 (Todo 8b): component-scoped schema versioning via
+ * `explorer_schema_versions(component='explorer-l1')`. Never the global
+ * `PRAGMA user_version`. Forward-only; opening a DB that records a future
+ * version throws `UnsupportedSchemaVersionError` before any write.
  */
 
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { SystemStoreError } from "./errors.mjs";
+import {
+  assertComponentSchemaVersionSupported,
+  migrateLayerTableNames,
+  migrateComponentSchema,
+  UnsupportedSchemaVersionError,
+} from "../../explorer-l0/src/schema-versions.mjs";
 import { stablePretty } from "../../explorer-l0/src/stable-json.mjs";
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS system_edges (
+/** Component key in the shared `explorer_schema_versions` table. */
+export const L1_COMPONENT = "explorer-l1";
+/** Highest L1 schema version this module produces. v2 = layered ids. */
+export const L1_SCHEMA_SUPPORTED_VERSION = 2;
+
+/** Re-export so callers can catch by type without knowing the source module. */
+export { UnsupportedSchemaVersionError };
+
+const SCHEMA_V1_DDL = `
+CREATE TABLE IF NOT EXISTS l1_system_edges (
   edge_id TEXT PRIMARY KEY,
   system_namespace TEXT NOT NULL,
   from_namespace TEXT NOT NULL,
@@ -28,12 +47,12 @@ CREATE TABLE IF NOT EXISTS system_edges (
   edge_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_system_edges_ns ON system_edges(system_namespace);
-CREATE INDEX IF NOT EXISTS idx_system_edges_from ON system_edges(system_namespace, from_logical_repo);
-CREATE INDEX IF NOT EXISTS idx_system_edges_to ON system_edges(system_namespace, to_logical_repo);
-CREATE INDEX IF NOT EXISTS idx_system_edges_contract ON system_edges(system_namespace, contract_key);
+CREATE INDEX IF NOT EXISTS idx_l1_system_edges_ns ON l1_system_edges(system_namespace);
+CREATE INDEX IF NOT EXISTS idx_l1_system_edges_from ON l1_system_edges(system_namespace, from_logical_repo);
+CREATE INDEX IF NOT EXISTS idx_l1_system_edges_to ON l1_system_edges(system_namespace, to_logical_repo);
+CREATE INDEX IF NOT EXISTS idx_l1_system_edges_contract ON l1_system_edges(system_namespace, contract_key);
 
-CREATE TABLE IF NOT EXISTS system_stitch_runs (
+CREATE TABLE IF NOT EXISTS l1_system_stitch_runs (
   run_id TEXT PRIMARY KEY,
   system_namespace TEXT NOT NULL,
   repos_json TEXT NOT NULL,
@@ -41,6 +60,19 @@ CREATE TABLE IF NOT EXISTS system_stitch_runs (
   created_at TEXT NOT NULL
 );
 `;
+
+/**
+ * v2 DDL: id_version column on l1_system_edges so persisted rows carry the
+ * layered identity version. Forward-only; existing v1 rows keep default 1
+ * until they are re-derived (via slice-migrate rebuild phase).
+ */
+const SCHEMA_V2_DDL = `ALTER TABLE l1_system_edges ADD COLUMN id_version INTEGER NOT NULL DEFAULT 1;`;
+
+/** @internal Step list used by migrateComponentSchema. */
+export const L1_MIGRATION_STEPS = [
+  { fromVersion: 0, ddl: SCHEMA_V1_DDL },
+  { fromVersion: 1, ddl: SCHEMA_V2_DDL },
+];
 
 /**
  * @param {string} dbPath
@@ -51,7 +83,24 @@ export function openSystemStore(dbPath) {
   }
   mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(dbPath);
-  db.exec(SCHEMA);
+  try {
+    assertComponentSchemaVersionSupported(
+      db,
+      L1_COMPONENT,
+      L1_SCHEMA_SUPPORTED_VERSION,
+    );
+    migrateLayerTableNames(db, SystemStoreError);
+    migrateComponentSchema({
+      db,
+      component: L1_COMPONENT,
+      supportedVersion: L1_SCHEMA_SUPPORTED_VERSION,
+      steps: L1_MIGRATION_STEPS,
+      errorCtor: SystemStoreError,
+    });
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   try {
     chmodSync(dbPath, 0o600);
   } catch {
@@ -79,7 +128,7 @@ export function persistSystemEdges(store, systemNamespace, edges) {
   if (!Array.isArray(edges)) throw new SystemStoreError("edges must be array");
 
   const insert = store._db.prepare(`
-    INSERT OR IGNORE INTO system_edges (
+    INSERT OR IGNORE INTO l1_system_edges (
       edge_id, system_namespace,
       from_namespace, from_logical_repo, from_fact_id,
       to_namespace, to_logical_repo, to_fact_id,
@@ -132,7 +181,7 @@ export function persistSystemEdges(store, systemNamespace, edges) {
  * @param {{ system_namespace: string, from_repo?: string, to_repo?: string, contract_key?: string }} q
  */
 export function listSystemEdges(store, q) {
-  let sql = `SELECT edge_json FROM system_edges WHERE system_namespace = ?`;
+  let sql = `SELECT edge_json FROM l1_system_edges WHERE system_namespace = ?`;
   /** @type {unknown[]} */
   const params = [q.system_namespace];
   if (q.from_repo) {
@@ -184,7 +233,7 @@ export function systemStats(store, systemNamespace) {
       `SELECT COUNT(*) AS n,
               COUNT(DISTINCT from_logical_repo) AS from_repos,
               COUNT(DISTINCT to_logical_repo) AS to_repos
-       FROM system_edges WHERE system_namespace = ?`,
+       FROM l1_system_edges WHERE system_namespace = ?`,
     )
     .get(systemNamespace);
   return {
