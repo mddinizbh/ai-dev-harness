@@ -310,12 +310,12 @@ describe("writeProjectionAtomic — atomic replace", () => {
 
     writeProjectionAtomic(out, renderedA);
     const filesA = new Set(collectFiles(out));
-    assert.ok(filesA.has(join("records", `${idToSlug("service:orders")}.md`)));
+    assert.ok(filesA.has(join("records", `${idToSlug("l0:service:orders")}.md`)));
 
     writeProjectionAtomic(out, renderedB);
     const filesB = new Set(collectFiles(out));
     assert.equal(
-      filesB.has(join("records", `${idToSlug("service:orders")}.md`)),
+      filesB.has(join("records", `${idToSlug("l0:service:orders")}.md`)),
       false,
       "stale file from previous projection must not survive atomic replace",
     );

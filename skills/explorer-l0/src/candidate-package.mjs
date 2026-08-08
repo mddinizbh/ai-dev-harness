@@ -21,6 +21,7 @@ import {
 import { deriveCoverageFromDraft } from "./coverage-draft.mjs";
 import { CandidatePackageError } from "./errors.mjs";
 import { createGraphIndex } from "./graph-hash.mjs";
+import { compareRaw } from "./layered-id.mjs";
 import { verifyAndPromote } from "./repo-verifier.mjs";
 import {
   validateArtifactManifest,
@@ -91,7 +92,7 @@ export function canonicalizeCandidatePackage(raw, options = {}) {
         manifest,
       ),
     )
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => compareRaw(a.id, b.id));
 
   let relations = draft.relations
     .map((r) =>
@@ -103,7 +104,7 @@ export function canonicalizeCandidatePackage(raw, options = {}) {
         manifest,
       ),
     )
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => compareRaw(a.id, b.id));
 
   assertUniqueIds(records, "record");
   assertUniqueIds(relations, "relation");

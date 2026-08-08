@@ -5,7 +5,7 @@ import { canonicalGraphHash, createGraphIndex } from "../src/graph-hash.mjs";
 import { NS, REV, SHA_A, artifactEvidence, sourceEngine } from "./fixtures.mjs";
 
 const RECORD = {
-  id: "service:billing",
+  id: "l0:service:billing",
   namespace: NS,
   type: "Service",
   name: "Billing",
@@ -19,7 +19,7 @@ const RECORD = {
 
 describe("canonicalGraphHash", () => {
   test("is independent of discovery order and object key order", () => {
-    const second = { ...RECORD, id: "service:orders", name: "Orders" };
+    const second = { ...RECORD, id: "l0:service:orders", name: "Orders" };
     const forward = canonicalGraphHash({ records: [RECORD, second], relations: [] });
     const reversed = canonicalGraphHash({ records: [second, RECORD], relations: [] });
     assert.equal(forward, reversed);
@@ -38,7 +38,7 @@ describe("canonicalGraphHash", () => {
 
 describe("createGraphIndex", () => {
   test("sorts ids and sets counts + hash", () => {
-    const second = { ...RECORD, id: "service:orders", name: "Orders" };
+    const second = { ...RECORD, id: "l0:service:orders", name: "Orders" };
     const index = createGraphIndex({
       namespace: NS,
       sourceRevision: REV,
@@ -46,7 +46,7 @@ describe("createGraphIndex", () => {
       engine: { name: "graphify", profile: "default" },
       graph: { records: [second, RECORD], relations: [] },
     });
-    assert.deepEqual(index.record_ids, ["service:billing", "service:orders"]);
+    assert.deepEqual(index.record_ids, ["l0:service:billing", "l0:service:orders"]);
     assert.equal(index.counts.records, 2);
     assert.equal(index.canonical_graph_hash, SHA_A.length === 64
       ? canonicalGraphHash({ records: [RECORD, second], relations: [] })

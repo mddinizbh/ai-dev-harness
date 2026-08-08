@@ -63,9 +63,10 @@ describe("relation endpoints always from natural keys", () => {
         ],
       }),
     );
-    assert.equal(pkg.relations[0].from_record, "service:billing");
-    assert.equal(pkg.relations[0].to_record, "endpoint:get:/billing");
-    assert.equal(pkg.relations[0].id, "exposes:service:billing->endpoint:get:/billing");
+    assert.equal(pkg.relations[0].from_record, "l0:service:billing");
+    assert.equal(pkg.relations[0].to_record, "l0:endpoint:get:/billing");
+    // ADR 0009: relation id body holds canonical natural keys (not record ids).
+    assert.equal(pkg.relations[0].id, "l0:rel:EXPOSES:billing->get:/billing");
     assert.notEqual(pkg.relations[0].id, "relation:llm-invented");
   });
 

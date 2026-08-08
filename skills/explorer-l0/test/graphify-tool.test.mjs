@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 import { main } from "../cli.mjs";
 import {
@@ -656,7 +657,27 @@ describe("runGraphifyExtract", () => {
 });
 
 describe("CLI setup and setup-status", () => {
-  test("setup-status emits JSON with installed/version fields", async () => {
+  // The setup-status test exercises the structured JSON output of the CLI when
+  // the Graphify tool is not installed. The simulation overrides
+  // UV_TOOL_BIN_DIR to an empty directory. uv itself MUST remain available
+  // because setup-status uses it for tool discovery. If the host has no uv at
+  // all, this test cannot exercise the happy path hermetically — skip cleanly
+  // rather than reporting a false failure. The production CLI still errors
+  // loudly when uv is missing during `setup`; this skip does NOT weaken that.
+  function uvOnPath() {
+    try {
+      execFileSync("uv", ["--version"], { stdio: "ignore", shell: false });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("setup-status emits JSON with installed/version fields", async (t) => {
+    if (!uvOnPath()) {
+      t.skip("uv not on PATH — setup-status requires uv for tool discovery; skipping hermetically");
+      return;
+    }
     const chunks = [];
     const origWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk, ...rest) => {
@@ -667,15 +688,18 @@ describe("CLI setup and setup-status", () => {
       process.stdout.write = origWrite;
     });
 
-    // Inject via env is hard; call main with dependency injection through module is not wired.
-    // Instead exercise status through library and CLI unknown-command still works.
-    // CLI integration uses real process — mock by setting PATH without graphify.
-    const emptyBin = tempDir("descobrir-empty-bin-");
-    const prevPath = process.env.PATH;
+    // Simulate "graphify not installed" by pointing UV_TOOL_BIN_DIR at an
+    // empty dir. KEEP uv itself on PATH (resolved from the host's real PATH)
+    // so setup-status can run its discovery logic without raising
+    // GraphifyToolError("uv required"). Previous override of process.env.PATH
+    // to a fully-empty bin made uv itself unfindable and broke the test.
+    const emptyToolBin = tempDir("descobrir-empty-toolbin-");
+    const realUv = dirname(execFileSync("uv", ["--which"], { encoding: "utf8", shell: false }).trim());
     const prevUvBin = process.env.UV_TOOL_BIN_DIR;
-    process.env.PATH = emptyBin;
-    process.env.UV_TOOL_BIN_DIR = emptyBin;
-    // Keep uv available from real path for --version if present; status should still work.
+    const prevPath = process.env.PATH;
+    process.env.UV_TOOL_BIN_DIR = emptyToolBin;
+    // Keep uv reachable: prepend the directory that actually contains uv.
+    process.env.PATH = `${realUv}:${prevPath}`;
     cleanups.push(() => {
       process.env.PATH = prevPath;
       if (prevUvBin === undefined) delete process.env.UV_TOOL_BIN_DIR;

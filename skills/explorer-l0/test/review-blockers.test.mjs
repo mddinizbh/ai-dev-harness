@@ -80,7 +80,7 @@ describe("same-key divergent package collision", () => {
     );
     // stored package remains A
     const row = store._db
-      .prepare(`SELECT package_json FROM candidate_packages WHERE candidate_id = ?`)
+      .prepare(`SELECT package_json FROM l0_candidate_packages WHERE candidate_id = ?`)
       .get(persistCandidate(store, a).candidate_id);
     const stored = JSON.parse(/** @type {string} */ (row.package_json));
     assert.equal(stored.records[0].summary, "summary A");
@@ -96,7 +96,7 @@ describe("acceptBaseline revalidates stored integrity", () => {
     const { candidate_id } = persistCandidate(store, pkg);
 
     const row = store._db
-      .prepare(`SELECT package_json FROM candidate_packages WHERE candidate_id = ?`)
+      .prepare(`SELECT package_json FROM l0_candidate_packages WHERE candidate_id = ?`)
       .get(candidate_id);
     const tampered = JSON.parse(/** @type {string} */ (row.package_json));
     tampered.coverage_report.passed = false;
@@ -109,7 +109,7 @@ describe("acceptBaseline revalidates stored integrity", () => {
       repository_verified_percentage: 99,
     };
     store._db
-      .prepare(`UPDATE candidate_packages SET package_json = ? WHERE candidate_id = ?`)
+      .prepare(`UPDATE l0_candidate_packages SET package_json = ? WHERE candidate_id = ?`)
       .run(stableStringify(tampered), candidate_id);
 
     assert.throws(

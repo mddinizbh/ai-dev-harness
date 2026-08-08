@@ -4,6 +4,7 @@
  */
 
 import { sha256Text, stableStringify, stableValue } from "./stable-json.mjs";
+import { compareRaw } from "./layered-id.mjs";
 
 const RECORD_FIELDS = [
   "id",
@@ -44,7 +45,8 @@ function project(value, fields) {
  * @param {{ id: string }} right
  */
 function byId(left, right) {
-  return left.id.localeCompare(right.id);
+  // Plan-locked: raw code-unit compare (ADR 0009). NEVER localeCompare.
+  return compareRaw(left.id, right.id);
 }
 
 /**
@@ -90,7 +92,7 @@ export function createArtifactManifest({
     engine,
     adapter,
     acquisition_mode: acquisitionMode,
-    artifacts: [...artifacts].sort((left, right) => left.path.localeCompare(right.path)),
+    artifacts: [...artifacts].sort((left, right) => compareRaw(left.path, right.path)),
     freshness,
   };
 }

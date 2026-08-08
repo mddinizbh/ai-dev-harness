@@ -385,7 +385,7 @@ async function runE2E(flags) {
         const store = openStore(dbPath);
         try {
           candidateCount = store._db
-            .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+            .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
             .get().n;
         } finally {
           store.close();
