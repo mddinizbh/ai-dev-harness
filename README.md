@@ -48,9 +48,9 @@ Graphify + Explorer + guardrails + SQLite + (opcional) projeção Obsidian.
 | Skill **`explorer-l0`** (alias `/descobrir`) | L0 index (Graphify + Explorer + finalize + accept) |
 | Skill **`explorer-l1`** (alias `/l1`, `/graph-system`) | L1 stitch + callers/callees |
 | Skill **`explorer-l2`** | JourneySpec bind + gaps |
-| Skill **`explorer-query`** | ensure ↑ · answer/context-pack ↓ · generate-human (repo) |
+| Skill **`explorer-query`** | ensure ↑ · answer/context-pack ↓ · Slice persistente opt-in · generate-human (repo) |
 | Human Gate (baseline aceito) | Explícito; **nunca** auto-accept |
-| L3 / Neo4j / Docker / grafo incremental | **Deferred** |
+| FTS5 / single-flight / L3 / Neo4j / Docker / grafo incremental | **Deferred** |
 
 ### Escopo explorer-l* 
 
@@ -64,6 +64,7 @@ Graphify + Explorer + guardrails + SQLite + (opcional) projeção Obsidian.
 | `explorer-l2` journey bind | Entregue |
 | `explorer-query` ensure / answer / generate-human | Entregue |
 | Projeção humana `.explorer/L{N}.md` on-demand | Entregue |
+| Context Slice persistente SQLite (`slice`, `slice-show`, opt-in `answer`) | Entregue |
 | L3, incremental update, Neo4j | Deferred |
 
 ### Operação rápida
@@ -98,10 +99,22 @@ node --test skills/explorer-l1/test/*.test.mjs
 node --test skills/explorer-l2/test/*.test.mjs
 node --test skills/explorer-query/test/*.test.mjs
 node skills/explorer-query/e2e/run.mjs
+node skills/explorer-query/e2e/context-slice-run.mjs
 
 # 5) Query / human projection (on-demand)
 # node skills/explorer-query/cli.mjs answer --edges edges.json --system-namespace sys
 # node skills/explorer-query/cli.mjs generate-human --repo-root . --layer l1 --from-pack pack.json
+
+# 6) Context Slice persistente (opt-in; rollback = remover --use-slice-cache)
+# node skills/explorer-query/cli.mjs slice \
+#   --system-namespace sys --system-db system.sqlite \
+#   --l0-db l0.sqlite --policy journey --seeds seeds.json
+# node skills/explorer-query/cli.mjs slice-show \
+#   --system-db system.sqlite --slice-hash <64-hex>
+# node skills/explorer-query/cli.mjs answer --use-slice-cache \
+#   --system-namespace sys --system-db system.sqlite \
+#   --l0-db l0.sqlite --policy journey --seeds seeds.json
+# node skills/explorer-query/src/slice-gc-cli.mjs --db system.sqlite
 ```
 
 **Paths centrais (defaults):**
@@ -109,9 +122,12 @@ node skills/explorer-query/e2e/run.mjs
 - DB: `${XDG_DATA_HOME:-~/.local/share}/descobrir/<namespace>.sqlite` (`0600`)
 - Runs: `${XDG_CACHE_HOME:-~/.cache}/descobrir/runs/<run-id>/`
 - L1 edges: tabelas `system_edges` / `system_stitch_runs` no mesmo DB (ou `--system-db`)
+- Context Slice: tabelas `context_slice_*` no `--system-db`; `context_slice_current` é ponteiro derivado, não fonte canônica
 - Após `install`/`uninstall`: **quit e restart OpenCode**
 
-**Exit codes:** `0` ok · `1` erro infra/typed · `2` blockers semânticos no finalize (sem write no DB)
+**Exit codes:** `0` ok · `1` erro infra/typed · `2` blockers semânticos (sem write parcial no DB)
+
+**Slice vs Pack vs diagrama:** L0/L1/L2 são fatos aceitos; Context Slice é cache derivado completo; Context Pack é projeção budgetada para agente; HTML/C4 é projeção descartável. Budgets de Pack não prometem token exato. Métricas locais: `cache_hit`, `cache_miss`, `materialization_ms`, `nodes`, `edges`, `misses_by_reason`, `slice_query_scan_rows`, `pack_truncated`.
 
 ### Navegação Descobrir
 
@@ -120,6 +136,7 @@ node skills/explorer-query/e2e/run.mjs
 - L2: [`skills/explorer-l2/SKILL.md`](skills/explorer-l2/SKILL.md)
 - Query: [`skills/explorer-query/SKILL.md`](skills/explorer-query/SKILL.md)
 - ADR 0008: [`docs/adr/0008-explorer-l-pipeline.md`](docs/adr/0008-explorer-l-pipeline.md)
+- ADR 0010: [`docs/adr/0010-persistent-context-slice-cache.md`](docs/adr/0010-persistent-context-slice-cache.md)
 - Plano: [`.omo/plans/pkg-pipeline-l0-l1-l2-context.md`](.omo/plans/pkg-pipeline-l0-l1-l2-context.md)
 - E2E hermético: [`skills/explorer-query/e2e/run.mjs`](skills/explorer-query/e2e/run.mjs)
 
@@ -133,7 +150,7 @@ ai-dev-harness/
 │   ├── explorer-l2/      # journeys
 │   └── explorer-query/   # ensure + answer + generate-human
 ├── docs/adr/0008-explorer-l-pipeline.md
-└── …
+└── docs/adr/0010-persistent-context-slice-cache.md
 ```
 
 ## Navegação
