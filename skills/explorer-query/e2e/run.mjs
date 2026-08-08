@@ -15,6 +15,7 @@ import {
   listProjections,
   writeHumanProjection,
 } from "../src/generate-human.mjs";
+import { makeFrontierFactId } from "../../explorer-l0/src/layered-id.mjs";
 
 const root = join(tmpdir(), `explorer-e2e-${process.pid}`);
 rmSync(root, { recursive: true, force: true });
@@ -23,7 +24,7 @@ mkdirSync(root, { recursive: true });
 const frontierDir = join(root, "frontiers");
 mkdirSync(frontierDir);
 
-// svc-a outbound + svc-b inbound same contract + config
+// svc-a outbound + svc-b inbound same contract + config (ADR 0009 v2 ids).
 const ck = "GET /api/debits/{param}";
 const fact = (partial) => ({
   namespace: "demo",
@@ -33,6 +34,24 @@ const fact = (partial) => ({
   evidence_snippet: "demo",
   ...partial,
 });
+const outId = makeFrontierFactId({
+  kind: "http_outbound",
+  namespace: "demo",
+  logical_repo: "svc-a",
+  source_revision: "fix",
+  identity_key: ck,
+  file: "X.kt",
+  line: 1,
+});
+const inId = makeFrontierFactId({
+  kind: "http_inbound",
+  namespace: "demo",
+  logical_repo: "svc-b",
+  source_revision: "fix",
+  identity_key: ck,
+  file: "X.kt",
+  line: 1,
+});
 
 writeFileSync(
   join(frontierDir, "svc-a.frontier.json"),
@@ -41,7 +60,7 @@ writeFileSync(
     namespace: "demo",
     facts: [
       fact({
-        id: "ff:out:1",
+        id: outId,
         kind: "http_outbound",
         logical_repo: "svc-a",
         method: "GET",
@@ -59,7 +78,7 @@ writeFileSync(
     namespace: "demo",
     facts: [
       fact({
-        id: "ff:in:1",
+        id: inId,
         kind: "http_inbound",
         logical_repo: "svc-b",
         method: "GET",

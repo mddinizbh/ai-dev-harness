@@ -62,7 +62,7 @@ export function bodyFromL1Pack(pack) {
   const lines = [
     `# Explorer L1 — ${pack.system_namespace || "system"}`,
     "",
-    "Projeção humana (não canônica). Fonte de verdade: SQLite `system_edges`.",
+      "Projeção humana (não canônica). Fonte de verdade: SQLite `l1_system_edges`.",
     "",
     "## Hops",
     "",

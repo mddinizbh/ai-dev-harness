@@ -14,6 +14,17 @@ import {
   listProjections,
   writeHumanProjection,
 } from "./src/generate-human.mjs";
+import { materializeSlice } from "./src/slice-materializer.mjs";
+import { openSliceStore } from "./src/slice-store.mjs";
+import {
+  exitCodeForError,
+  sanitizeSliceErrorMessage,
+} from "./src/slice-errors.mjs";
+import { exportPackage, openStore } from "../explorer-l0/src/store.mjs";
+import { listSystemEdges, openSystemStore } from "../explorer-l1/src/system-store.mjs";
+import { listJourneys, openJourneyStore, showJourney } from "../explorer-l2/src/journey-store.mjs";
+import { projectContextPack } from "./src/context-pack.mjs";
+import { runSliceGcCli } from "./src/slice-gc-cli.mjs";
 
 function parseArgs(argv) {
   /** @type {Record<string, string | boolean>} */
@@ -38,12 +49,39 @@ function req(flags, name) {
   return v;
 }
 
+function openRuntimeStores({ l0Db, systemDb }) {
+  const rawL0 = openStore(l0Db);
+  const rawL1 = openSystemStore(systemDb);
+  const rawL2 = openJourneyStore(systemDb);
+  const sliceStore = openSliceStore(systemDb);
+  return {
+    l0Store: {
+      getAcceptedBaseline: (q) => rawL0.getAcceptedBaseline(q),
+      getAcceptedPackage: (q) => exportPackage(rawL0, { ...q, accepted: true }),
+    },
+    l1Store: {
+      listSystemEdges: (q) => listSystemEdges(rawL1, q),
+    },
+    l2Store: {
+      listJourneys: (systemNamespace) => listJourneys(rawL2, systemNamespace),
+      showJourney: (q) => showJourney(rawL2, q),
+    },
+    sliceStore,
+    close() {
+      sliceStore.close();
+      rawL2.close?.();
+      rawL1.close?.();
+      rawL0.close?.();
+    },
+  };
+}
+
 export async function main(argv) {
   try {
     const [cmd, ...rest] = argv;
     if (!cmd) {
       throw new Error(
-        "usage: ensure | answer | generate-human | list-projections",
+        "usage: ensure | answer | generate-human | list-projections | slice | slice-show | slice-gc",
       );
     }
     const flags = parseArgs(rest);
@@ -96,6 +134,44 @@ export async function main(argv) {
         return 0;
       }
       case "answer": {
+        if (flags["use-slice-cache"] === true) {
+          // opt-in path: materialize/reuse Slice then project Pack (Todo 13+14)
+          const systemNs = req(flags, "system-namespace");
+          const systemDb = req(flags, "system-db");
+          const l0Db = req(flags, "l0-db");
+          const policyName = req(flags, "policy");
+          const seedsPath = req(flags, "seeds");
+          const seeds = JSON.parse(readFileSync(seedsPath, "utf8"));
+          const stores = openRuntimeStores({ l0Db, systemDb });
+          const request = {
+            systemNamespace: systemNs,
+            policy: { name: policyName, version: 1 },
+            seeds,
+            options: {},
+            limits: {},
+          };
+          try {
+            const mat = await materializeSlice({ request, l0Store: stores.l0Store, l1Store: stores.l1Store, l2Store: stores.l2Store, store: stores.sliceStore });
+            const pack = projectContextPack({
+              slice: mat.slice,
+              sliceHash: mat.sliceHash,
+              derivationKey: mat.derivationKey,
+              budget: { max_nodes: 100, max_edges: 200, max_chars: 8000 },
+            });
+            const envelope = {
+              ...pack,
+              generated_at: new Date().toISOString(),
+            };
+            if (typeof flags.output === "string") {
+              writeFileSync(flags.output, `${JSON.stringify(envelope, null, 2)}\n`);
+            }
+            process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+            return 0;
+          } finally {
+            stores.close();
+          }
+        }
+        // legacy path (flag off) — untouched, never opens/creates Slice tables
         const systemNs = req(flags, "system-namespace");
         const edgesPath = req(flags, "edges");
         const edgesDoc = JSON.parse(readFileSync(edgesPath, "utf8"));
@@ -153,13 +229,83 @@ export async function main(argv) {
         );
         return 0;
       }
+      case "slice": {
+        const systemNs = req(flags, "system-namespace");
+        const systemDb = req(flags, "system-db");
+        const l0Db = req(flags, "l0-db");
+        const policyName = req(flags, "policy");
+        const seedsPath = req(flags, "seeds");
+        const seeds = JSON.parse(readFileSync(seedsPath, "utf8"));
+        const stores = openRuntimeStores({ l0Db, systemDb });
+        const request = {
+          systemNamespace: systemNs,
+          policy: { name: policyName, version: 1 },
+          seeds,
+          options: {},
+          limits: {},
+        };
+        try {
+          const result = await materializeSlice({ request, l0Store: stores.l0Store, l1Store: stores.l1Store, l2Store: stores.l2Store, store: stores.sliceStore });
+          const envelope = {
+            command: "slice",
+            slice_hash: result.sliceHash,
+            status: result.status,
+            created: result.created,
+            system_namespace: systemNs,
+            generated_at: new Date().toISOString(),
+          };
+          process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+          return 0;
+        } finally {
+          stores.close();
+        }
+      }
+      case "slice-show": {
+        const systemDb = req(flags, "system-db");
+        const hash = req(flags, "slice-hash");
+        const sliceStore = openSliceStore(systemDb);
+        const slice = sliceStore.readByHash({ sliceHash: hash });
+        if (!slice) {
+          throw new Error(`slice not found: ${hash}`);
+        }
+        const envelope = {
+          command: "slice-show",
+          slice_hash: hash,
+          slice,
+          generated_at: new Date().toISOString(),
+        };
+        process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+        sliceStore.close();
+        return 0;
+      }
+      case "slice-gc": {
+        // Accept --system-db as alias of --db for CLI consistency.
+        const gcArgv = [];
+        for (let i = 0; i < rest.length; i += 1) {
+          const t = rest[i];
+          if (t === "--system-db") {
+            gcArgv.push("--db");
+            continue;
+          }
+          gcArgv.push(t);
+        }
+        if (!gcArgv.includes("--db") && typeof flags["system-db"] === "string") {
+          gcArgv.push("--db", flags["system-db"]);
+        }
+        const result = await runSliceGcCli(gcArgv);
+        if (result.stderr) process.stderr.write(`${result.stderr}\n`);
+        if (result.report) {
+          process.stdout.write(`${JSON.stringify({ command: "slice-gc", ...result.report }, null, 2)}\n`);
+        }
+        return result.code;
+      }
       default:
         throw new Error(`unknown command: ${cmd}`);
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`${msg}\n`);
-    return 1;
+    const sanitized = sanitizeSliceErrorMessage(err);
+    process.stderr.write(`${sanitized}\n`);
+    return exitCodeForError(err);
   }
 }
 
