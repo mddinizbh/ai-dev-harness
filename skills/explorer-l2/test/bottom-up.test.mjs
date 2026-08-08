@@ -19,6 +19,9 @@ const edges = [
     match_kind: "config_binding",
     score: 0.95,
     config_key: "PROVIDERCONTROLLER_API_URL",
+    trigger: "cron",
+    interaction: "http",
+    schedule: "*/5 * * * *",
     evidence: [
       {
         side: "from",
@@ -61,6 +64,7 @@ describe("propose-from-l1", () => {
     assert.equal(spec.steps[0].from, "zul-tax");
     assert.equal(spec.steps[0].to, "tax-provider-controller");
     assert.equal(spec.steps[0].provenance.source, "l1");
+    assert.equal(spec.steps[0].trigger, "cron");
     assert.ok(spec.title?.includes("tax") || spec.title?.includes("tpc"));
     assert.ok(spec.id.startsWith("integration-") || spec.id === "journey-test-tpc");
     assert.ok(spec.steps[0].description.includes("HTTP"));
@@ -68,6 +72,92 @@ describe("propose-from-l1", () => {
     assert.ok(!/RENDIMENTO|default partner/i.test(JSON.stringify(spec)));
     // no robotic pipeline dump as the only description
     assert.ok(!/^Auto-proposed from L1/i.test(spec.description));
+  });
+
+  test("emits a code read plan with edge evidence, hotspots, and internal continuity", () => {
+    const { spec: draft } = proposeFromL1(edges, {
+      system_namespace: "estapar-system",
+      from_repo: "zul-tax",
+      to_repo: "tax-provider-controller",
+      min_score: 0.9,
+    });
+    const packages = {
+      "zul-tax": {
+        records: [
+          {
+            id: "method:retrieve",
+            type: "Method",
+            name: "retrieveDebits()",
+            summary: "Method retrieveDebits() at L30",
+            status: "comprovado",
+            attributes: {
+              source_file:
+                "src/main/kotlin/com/zuldigital/tax/provider/TaxProviderControllerClient.kt",
+              line: 30,
+            },
+          },
+          {
+            id: "method:submit",
+            type: "Method",
+            name: "verifyAndSubmit()",
+            summary: "Method verifyAndSubmit() at L53",
+            status: "comprovado",
+            attributes: {
+              source_file:
+                "src/main/kotlin/com/zuldigital/tax/service/IpvaSubmitService.kt",
+              line: 53,
+            },
+          },
+        ],
+        relations: [
+          {
+            id: "calls:retrieve-submit",
+            relation_type: "CALLS",
+            from_record: "method:retrieve",
+            to_record: "method:submit",
+            evidence: [],
+          },
+        ],
+      },
+      "tax-provider-controller": {
+        records: [
+          {
+            id: "method:fetch",
+            type: "Method",
+            name: "fetchDebits()",
+            summary: "Method fetchDebits() at L28",
+            status: "comprovado",
+            attributes: {
+              source_file:
+                "src/main/java/br/com/zuldigital/taxprovidercontroller/controller/DebitsController.java",
+              line: 28,
+            },
+          },
+        ],
+        relations: [],
+      },
+    };
+
+    const { spec } = enrichFromL0(draft, { packages_by_repo: packages });
+    assert.ok(Array.isArray(spec.read_plan));
+    assert.ok(
+      spec.read_plan.some(
+        (item) =>
+          item.reason === "edge_endpoint" &&
+          item.file.endsWith("TaxProviderControllerClient.kt") &&
+          item.line === 30,
+      ),
+    );
+    assert.ok(
+      spec.read_plan.some(
+        (item) =>
+          item.trigger === "internal" &&
+          item.symbol === "verifyAndSubmit()" &&
+          item.relation_type === "CALLS",
+      ),
+    );
+    assert.ok(spec.read_plan.every((item) => item.status === "pending"));
+    assert.equal(spec.pipeline.code_read_required, true);
   });
 });
 
@@ -186,6 +276,10 @@ describe("synthesize", () => {
     assert.equal(result.bind.steps_bound, 1);
     assert.equal(result.bind.steps_gap, 0);
     assert.equal(result.bind.status, "complete");
+    assert.equal(result.bind.structural_status, "complete");
+    assert.equal(result.bind.understanding_status, "code-read-required");
+    assert.ok(result.read_plan.length > 0);
+    assert.equal(result.bind.bound[0].trigger, "cron");
     assert.ok(result.pipeline.includes("propose-from-l1"));
   });
 });

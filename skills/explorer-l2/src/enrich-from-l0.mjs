@@ -35,9 +35,26 @@ export function enrichFromL0(spec, opts) {
   const warnings = [];
   /** @type {object[]} */
   const steps = [];
+  /** @type {object[]} */
+  const readPlan = [];
 
   for (const step of spec.steps) {
     const evidence = step.provenance?.evidence || [];
+    const stepReadPlan = evidence
+      .filter((item) => item.file)
+      .map((item, index) => ({
+        id: `read:${step.id}:edge:${index + 1}`,
+        step_id: step.id,
+        repo: item.logical_repo,
+        trigger: step.trigger,
+        reason: "edge_endpoint",
+        read_kind: "source-context",
+        file: item.file,
+        line: item.line,
+        edge_id: item.edge_id,
+        side: item.side,
+        status: "pending",
+      }));
     const repos = new Set();
     if (step.from) repos.add(step.from);
     if (step.to) repos.add(step.to);
@@ -90,8 +107,9 @@ export function enrichFromL0(spec, opts) {
             name: r.name,
             summary: r.summary,
             source_file: (r.attributes && r.attributes.source_file) || fp,
-            focus: r.attributes?.focus,
-            status: r.status,
+             focus: r.attributes?.focus,
+             line: recordLine(r),
+             status: r.status,
             id: r.id,
           });
         }
@@ -115,8 +133,9 @@ export function enrichFromL0(spec, opts) {
               name: r.name,
               summary: r.summary,
               source_file: (r.attributes && r.attributes.source_file) || f,
-              focus: r.attributes?.focus,
-              status: r.status,
+               focus: r.attributes?.focus,
+               line: recordLine(r),
+               status: r.status,
               id: r.id,
               hotspot: true,
             });
@@ -129,6 +148,45 @@ export function enrichFromL0(spec, opts) {
     const hotspots = deduped.filter((a) =>
       BODY_HOTSPOTS.some((re) => re.test(a.name || "") || re.test(a.summary || "")),
     );
+    for (const [index, hotspot] of hotspots.entries()) {
+      stepReadPlan.push({
+        id: `read:${step.id}:hotspot:${index + 1}`,
+        step_id: step.id,
+        repo: hotspot.repo,
+        trigger: step.trigger,
+        reason: "body_hotspot",
+        read_kind: "method-body",
+        body_read_required: true,
+        symbol_id: hotspot.id,
+        symbol: hotspot.name,
+        file: hotspot.source_file,
+        line: hotspot.line,
+        status: "pending",
+      });
+    }
+
+    const internalLinks = findInternalContinuity(packages, deduped);
+    for (const [index, link] of internalLinks.entries()) {
+      stepReadPlan.push({
+        id: `read:${step.id}:internal:${index + 1}`,
+        step_id: step.id,
+        repo: link.repo,
+        trigger: "internal",
+        reason: "internal_continuity",
+        read_kind: link.record.type === "Method" ? "method-body" : "source-context",
+        body_read_required: link.record.type === "Method",
+        relation_type: link.relation.relation_type,
+        from_record: link.relation.from_record,
+        to_record: link.relation.to_record,
+        symbol_id: link.record.id,
+        symbol: link.record.name,
+        file: recordFile(link.record),
+        line: recordLine(link.record),
+        status: "pending",
+      });
+    }
+    const dedupedReadPlan = dedupeReadPlan(stepReadPlan);
+    readPlan.push(...dedupedReadPlan);
 
     if (hotspots.length > 0) {
       const names = hotspots
@@ -186,8 +244,15 @@ export function enrichFromL0(spec, opts) {
           name: h.name,
           source_file: h.source_file,
         })),
-        warnings: stepWarnings,
-      },
+         warnings: stepWarnings,
+         internal_links: internalLinks.map((link) => ({
+           repo: link.repo,
+           relation_type: link.relation.relation_type,
+           from_record: link.relation.from_record,
+           to_record: link.relation.to_record,
+         })),
+         read_plan: dedupedReadPlan,
+       },
     });
   }
 
@@ -216,9 +281,11 @@ export function enrichFromL0(spec, opts) {
       ...(spec.pipeline || {}),
       stage: "enrich-from-l0",
       l0_repos: repoList,
-      warning_count: warnings.length,
-      claims_blocked_until_body_read: claims_blocked,
+     warning_count: warnings.length,
+     claims_blocked_until_body_read: claims_blocked,
+     code_read_required: readPlan.length > 0,
     },
+    read_plan: dedupeReadPlan(readPlan),
     enrichment: {
       warnings,
       claims_blocked_until_body_read: claims_blocked,
@@ -235,6 +302,7 @@ export function enrichFromL0(spec, opts) {
       hotspot_steps: steps.filter((s) => (s.provenance?.l0_hotspots || []).length > 0)
         .length,
       warning_count: warnings.length,
+      read_plan_items: dedupeReadPlan(readPlan).length,
     },
   };
 }
@@ -348,5 +416,95 @@ function dedupeAnchors(anchors) {
   }
   // hotspots first
   out.sort((a, b) => Number(!!b.hotspot) - Number(!!a.hotspot));
+  return out;
+}
+
+const INTERNAL_FLOW_RELATIONS = new Set([
+  "CALLS",
+  "INVOKES",
+  "DELEGATES_TO",
+  "DISPATCHES_TO",
+  "HANDLES",
+]);
+
+/** @param {object} record */
+function recordFile(record) {
+  return record?.attributes?.source_file || record?.attributes?.file || extractFileFromEvidence(record);
+}
+
+/** @param {object} record */
+function recordLine(record) {
+  const direct = Number(record?.attributes?.line || record?.attributes?.start_line || 0);
+  if (direct > 0) return direct;
+  for (const item of record?.evidence || []) {
+    const match = typeof item?.uri === "string" ? item.uri.match(/#L(\d+)/) : null;
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+/**
+ * Return the first internal flow neighbors of the L0 anchors. This is a code
+ * navigation aid, not an ordered domain narrative.
+ *
+ * @param {Record<string, {records?: object[], relations?: object[]}>} packages
+ * @param {object[]} anchors
+ */
+function findInternalContinuity(packages, anchors) {
+  const anchorIdsByRepo = new Map();
+  for (const anchor of anchors) {
+    if (!anchor.id || !anchor.repo) continue;
+    if (!anchorIdsByRepo.has(anchor.repo)) anchorIdsByRepo.set(anchor.repo, new Set());
+    anchorIdsByRepo.get(anchor.repo).add(anchor.id);
+  }
+
+  const links = [];
+  for (const [repo, anchorIds] of anchorIdsByRepo) {
+    const pkg = packages[repo];
+    const records = new Map((pkg?.records || []).map((record) => [record.id, record]));
+    for (const relation of pkg?.relations || []) {
+      const relationType = String(relation.relation_type || "").toUpperCase();
+      if (!INTERNAL_FLOW_RELATIONS.has(relationType)) continue;
+      const fromAnchored = anchorIds.has(relation.from_record);
+      const toAnchored = anchorIds.has(relation.to_record);
+      if (!fromAnchored && !toAnchored) continue;
+      const neighborId = fromAnchored ? relation.to_record : relation.from_record;
+      const record = records.get(neighborId);
+      if (!record || (record.type !== "Method" && record.type !== "Service")) continue;
+      links.push({ repo, relation, record });
+    }
+  }
+  return dedupeInternalLinks(links);
+}
+
+/** @param {object[]} links */
+function dedupeInternalLinks(links) {
+  const seen = new Set();
+  return links.filter((link) => {
+    const key = `${link.repo}\0${link.relation.id || ""}\0${link.record.id || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** @param {object[]} items */
+function dedupeReadPlan(items) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const key = [
+      item.step_id,
+      item.reason,
+      item.repo || "",
+      item.file || "",
+      item.line || 0,
+      item.symbol_id || "",
+      item.relation_type || "",
+    ].join("\0");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
   return out;
 }
