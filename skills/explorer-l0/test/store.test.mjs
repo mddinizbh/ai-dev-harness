@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, test } from "node:test";
 
 import { canonicalizeCandidatePackage } from "../src/candidate-package.mjs";
@@ -45,6 +46,25 @@ function packageA(overrides = {}) {
 }
 
 describe("SQLite document store", () => {
+  test("creates only L0-prefixed domain tables for a fresh store", () => {
+    const dbPath = tempDbPath();
+    const store = openStore(dbPath);
+    store.close();
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const tables = db
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+         ORDER BY name`,
+      )
+      .all()
+      .map((row) => row.name);
+    db.close();
+
+    assert.deepEqual(tables, ["l0_accepted_baselines", "l0_candidate_packages"]);
+  });
+
   test("persist-candidate is idempotent for the same namespace/repo/revision/hash", () => {
     const dbPath = tempDbPath();
     const store = openStore(dbPath);

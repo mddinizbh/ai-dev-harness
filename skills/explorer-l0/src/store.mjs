@@ -15,6 +15,7 @@ import {
   toAcceptanceError,
 } from "./store-fs.mjs";
 import { SCHEMA_SQL, candidateIdFor } from "./store-schema.mjs";
+import { migrateLayerTableNames } from "./schema-versions.mjs";
 import { stablePretty, stableStringify } from "./stable-json.mjs";
 
 export { AcceptanceError, StoreError };
@@ -25,7 +26,7 @@ export { AcceptanceError, StoreError };
  */
 function loadPackage(store, candidateId) {
   const row = store._db
-    .prepare(`SELECT package_json FROM candidate_packages WHERE candidate_id = ?`)
+    .prepare(`SELECT package_json FROM l0_candidate_packages WHERE candidate_id = ?`)
     .get(candidateId);
   if (!row) {
     throw new StoreError(`candidate not found: ${candidateId}`);
@@ -43,8 +44,14 @@ export function openStore(dbPath) {
   }
   ensureParentDir(dbPath);
   const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA foreign_keys = ON;");
-  db.exec(SCHEMA_SQL);
+  try {
+    db.exec("PRAGMA foreign_keys = ON;");
+    migrateLayerTableNames(db, StoreError);
+    db.exec(SCHEMA_SQL);
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   lockDownFile(dbPath);
 
   return {
@@ -61,7 +68,7 @@ export function openStore(dbPath) {
         .prepare(
           `SELECT candidate_id, namespace, logical_repo, source_revision,
                   canonical_graph_hash, created_at
-           FROM candidate_packages
+           FROM l0_candidate_packages
            WHERE namespace = ? AND logical_repo = ?
            ORDER BY created_at ASC, candidate_id ASC`,
         )
@@ -77,7 +84,7 @@ export function openStore(dbPath) {
       const row = db
         .prepare(
           `SELECT namespace, logical_repo, candidate_id, approver, accepted_at
-           FROM accepted_baselines
+           FROM l0_accepted_baselines
            WHERE namespace = ? AND logical_repo = ?`,
         )
         .get(q.namespace, q.logical_repo);
@@ -113,7 +120,7 @@ export function persistCandidate(store, pkg) {
     db,
     () => {
       db.prepare(
-        `INSERT INTO candidate_packages (
+        `INSERT INTO l0_candidate_packages (
            candidate_id, namespace, logical_repo, source_revision,
            canonical_graph_hash, package_json, created_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -167,7 +174,7 @@ export function acceptBaseline(store, input) {
     db,
     () => {
       db.prepare(
-        `INSERT INTO accepted_baselines (namespace, logical_repo, candidate_id, approver, accepted_at)
+        `INSERT INTO l0_accepted_baselines (namespace, logical_repo, candidate_id, approver, accepted_at)
          VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(namespace, logical_repo) DO UPDATE SET
            candidate_id = excluded.candidate_id,
@@ -219,7 +226,7 @@ export function exportPackage(store, q) {
 export function findCandidateByHash(store, q) {
   const row = store._db
     .prepare(
-      `SELECT candidate_id FROM candidate_packages
+      `SELECT candidate_id FROM l0_candidate_packages
        WHERE namespace = ? AND logical_repo = ? AND canonical_graph_hash = ?
        ORDER BY created_at DESC LIMIT 1`,
     )
