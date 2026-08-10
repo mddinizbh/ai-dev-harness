@@ -17,8 +17,11 @@
 
 import { execFileSync } from "node:child_process";
 import { makeFrontierFactId, compareRaw } from "../../explorer-l0/src/layered-id.mjs";
+import { adapterFor, describeAdapters, isAdapterFile } from "./adapters/index.mjs";
 import { FrontierError } from "./errors.mjs";
 import { contractKey, normalizeHttpPath, normalizeMethod } from "./path-normalize.mjs";
+
+export { describeAdapters };
 
 /**
  * @typedef {{
@@ -82,6 +85,7 @@ function listSourceFiles(repoPath, revision) {
         !p.includes("/test/") &&
         (/\.(kt|java|yml|yaml|properties)$/i.test(p) ||
           /application.*\.(yml|yaml|properties)$/i.test(p) ||
+          isAdapterFile(p) ||
           /(^|\/)(cron\.d\/[^/]+|crontab|[^/]+\.cron)$/i.test(p)),
     );
 }
@@ -354,6 +358,24 @@ function resolveOutboundConfigKey(line, valueBindings) {
 
 function extractFromSource(text, file, meta) {
   if (isCronSource(file)) return extractFromCron(text, file, meta);
+  const adapter = adapterFor(file);
+  if (adapter) {
+    // Adapter owns the language rules; identity stays here so every fact id in
+    // the system is stamped by the same builder (ADR 0009).
+    return adapter
+      .extract(text, file, meta, { contractKey, normalizeHttpPath, normalizeMethod })
+      .map((fact) => {
+        // identity key mirrors the inline JVM rules: contract for HTTP facts,
+        // config key for bindings, topic for messaging.
+        const identity = fact.contract_key || fact.config_key || fact.topic;
+        if (!identity) {
+          throw new FrontierError(
+            `adapter ${adapter.id} emitted a fact without contract_key/config_key/topic (${file}:${fact.line})`,
+          );
+        }
+        return { ...fact, id: factId(fact.kind, meta, fact.file, fact.line, identity) };
+      });
+  }
   /** @type {FrontierFact[]} */
   const facts = [];
   const lines = text.split(/\r?\n/);
@@ -596,6 +618,88 @@ export function extractFrontierFromGit(input) {
   const byId = new Map();
   for (const f of all) byId.set(f.id, f);
   return [...byId.values()].sort((a, b) => compareRaw(a.id, b.id));
+}
+
+/**
+ * Coverage inspection for one repo: what was scanned, what was skipped, which
+ * adapters fired and what came out. Feeds `frontier report`, whose whole job is
+ * to answer "can I trust an empty answer from this repo?".
+ *
+ * @param {{ repoPath: string, revision: string, namespace: string, logical_repo: string }} input
+ */
+export function inspectRepoFrontier(input) {
+  if (!input?.repoPath || !input.revision || !input.namespace || !input.logical_repo) {
+    throw new FrontierError("repoPath, revision, namespace, logical_repo are required");
+  }
+  const allFiles = execFileSync(
+    "git",
+    ["-C", input.repoPath, "ls-tree", "-r", "--name-only", input.revision],
+    { encoding: "utf8", shell: false, maxBuffer: 32 * 1024 * 1024 },
+  )
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const selected = listSourceFiles(input.repoPath, input.revision);
+  const selectedSet = new Set(selected);
+
+  /** @param {string} p */
+  const ext = (p) => {
+    const base = p.split("/").pop() || p;
+    const dot = base.lastIndexOf(".");
+    return dot > 0 ? base.slice(dot).toLowerCase() : "(no-ext)";
+  };
+
+  /** @type {Record<string, number>} */
+  const skippedByExt = {};
+  for (const f of allFiles) {
+    if (selectedSet.has(f)) continue;
+    const e = ext(f);
+    skippedByExt[e] = (skippedByExt[e] || 0) + 1;
+  }
+
+  /** @type {Record<string, number>} */
+  const adapters = {};
+  for (const f of selected) {
+    const a = adapterFor(f);
+    const key = a ? a.id : "jvm-inline";
+    adapters[key] = (adapters[key] || 0) + 1;
+  }
+
+  const facts = extractFrontierFromGit({
+    repoPath: input.repoPath,
+    revision: input.revision,
+    namespace: input.namespace,
+    logical_repo: input.logical_repo,
+  });
+
+  /** @type {Record<string, number>} */
+  const byKind = {};
+  for (const f of facts) byKind[f.kind] = (byKind[f.kind] || 0) + 1;
+
+  const topSkipped = Object.entries(skippedByExt)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([extension, count]) => ({ extension, count }));
+
+  return {
+    logical_repo: input.logical_repo,
+    source_revision: input.revision,
+    files_total: allFiles.length,
+    files_scanned: selected.length,
+    files_skipped: allFiles.length - selected.length,
+    skipped_top_extensions: topSkipped,
+    files_by_extractor: adapters,
+    fact_count: facts.length,
+    facts_by_kind: byKind,
+    trust:
+      facts.length === 0
+        ? "no-coverage"
+        : byKind.http_inbound
+          ? "has-inbound"
+          : "outbound-or-config-only",
+    facts,
+  };
 }
 
 /**

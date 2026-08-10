@@ -137,8 +137,19 @@ export function persistSystemEdges(store, systemNamespace, edges) {
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
 
+  // `edge_id` is the table's sole PRIMARY KEY and does not encode the system
+  // namespace, so an edge already owned by ANOTHER namespace is silently
+  // dropped by INSERT OR IGNORE. That is a real gap (a namespace can end up
+  // missing edges it legitimately has); until the key is migrated to
+  // (system_namespace, edge_id) we at least refuse to hide it.
+  const owner = store._db.prepare(
+    "SELECT system_namespace FROM l1_system_edges WHERE edge_id = ?",
+  );
+
   let inserted = 0;
   let skipped = 0;
+  /** @type {{edge_id: string, contract_key: string, owned_by: string}[]} */
+  const conflicts = [];
   const now = new Date().toISOString();
   const tx = store._db.prepare("BEGIN");
   const commit = store._db.prepare("COMMIT");
@@ -165,15 +176,26 @@ export function persistSystemEdges(store, systemNamespace, edges) {
         stablePretty(e),
         now,
       );
-      if (r.changes === 1) inserted += 1;
-      else skipped += 1;
+      if (r.changes === 1) {
+        inserted += 1;
+      } else {
+        skipped += 1;
+        const existing = owner.get(e.edge_id);
+        if (existing && existing.system_namespace !== systemNamespace) {
+          conflicts.push({
+            edge_id: e.edge_id,
+            contract_key: e.contract_key,
+            owned_by: existing.system_namespace,
+          });
+        }
+      }
     }
     commit.run();
   } catch (err) {
     rollback.run();
     throw new SystemStoreError("persist failed", { cause: err });
   }
-  return { inserted, skipped };
+  return { inserted, skipped, conflicts };
 }
 
 /**

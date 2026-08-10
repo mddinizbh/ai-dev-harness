@@ -7,6 +7,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { tableExists } from "../../explorer-l0/src/schema-versions.mjs";
+import { unmappedConfigKeys } from "./config-map.mjs";
 import { L1Error } from "./errors.mjs";
 import { extractFrontierFromGit } from "./frontier-extract.mjs";
 import { matchFrontiers } from "./matcher.mjs";
@@ -172,6 +173,54 @@ export function stitchL1(input) {
     }
   }
 
+  const frontier_summary = Object.fromEntries(
+    Object.entries(frontiers).map(([k, v]) => [
+      k,
+      {
+        total: v.length,
+        inbound: v.filter((x) => x.kind === "http_inbound").length,
+        outbound: v.filter((x) => x.kind === "http_outbound").length,
+        config: v.filter((x) => x.kind === "config_binding").length,
+        topic_publish: v.filter((x) => x.kind === "topic_publish").length,
+        topic_consume: v.filter((x) => x.kind === "topic_consume").length,
+        cron: v.filter((x) => x.trigger === "cron").length,
+      },
+    ]),
+  );
+
+  // ── Item 1: an empty frontier is a failure, not an answer ────────────────
+  // `edge_count: 0` with `status: "stitched"` reads as "these services do not
+  // talk". Usually it means "this repo was never parsed" — a renamed config
+  // file, a framework without an adapter, a wrong revision. Fail loudly.
+  const emptyRepos = Object.entries(frontiers)
+    .filter(([, facts]) => !facts || facts.length === 0)
+    .map(([repo]) => repo)
+    .sort();
+
+  const configResolution = input.config_map_resolution || null;
+  const unmapped = unmappedConfigKeys(frontiers, input.config_target_repo || {});
+
+  if (emptyRepos.length > 0 && !input.allow_empty_frontier) {
+    return {
+      status: "blocked",
+      exit_code: 2,
+      system_namespace: input.system_namespace,
+      blockers: emptyRepos.map((repo) => ({
+        code: "frontier_empty",
+        logical_repo: repo,
+        message: `no frontier facts extracted from ${repo} at its accepted revision`,
+        hint:
+          "run `frontier-report --repos ...` to see what was scanned; a language without an adapter yields zero silently",
+      })),
+      frontier_summary,
+      empty_repos: emptyRepos,
+      unmapped_config_keys: unmapped,
+      config_map: configResolution,
+      baselines,
+      note: "nothing was persisted; pass --allow-empty-frontier to stitch anyway",
+    };
+  }
+
   const pairs =
     input.pairs ||
     input.repos.flatMap((a) =>
@@ -200,21 +249,6 @@ export function stitchL1(input) {
   for (const e of edges) byId.set(e.edge_id, e);
   edges = [...byId.values()];
 
-  const frontier_summary = Object.fromEntries(
-    Object.entries(frontiers).map(([k, v]) => [
-      k,
-      {
-        total: v.length,
-        inbound: v.filter((x) => x.kind === "http_inbound").length,
-        outbound: v.filter((x) => x.kind === "http_outbound").length,
-        config: v.filter((x) => x.kind === "config_binding").length,
-        topic_publish: v.filter((x) => x.kind === "topic_publish").length,
-        topic_consume: v.filter((x) => x.kind === "topic_consume").length,
-        cron: v.filter((x) => x.trigger === "cron").length,
-      },
-    ]),
-  );
-
   if (input.dry_run) {
     return {
       status: "dry_run",
@@ -222,13 +256,16 @@ export function stitchL1(input) {
       edge_count: edges.length,
       edges,
       frontier_summary,
+      empty_repos: emptyRepos,
+      unmapped_config_keys: unmapped,
+      config_map: configResolution,
       baselines,
     };
   }
 
   const store = openSystemStore(systemDb);
   try {
-    const { inserted, skipped } = persistSystemEdges(
+    const { inserted, skipped, conflicts } = persistSystemEdges(
       store,
       input.system_namespace,
       edges,
@@ -265,9 +302,19 @@ export function stitchL1(input) {
       edge_count: edges.length,
       inserted,
       skipped,
+      ...(conflicts && conflicts.length
+        ? {
+            edge_id_conflicts: conflicts,
+            warning:
+              "edges dropped because another system namespace already owns the same edge_id (PRIMARY KEY does not include system_namespace)",
+          }
+        : {}),
       stats,
       edges,
       frontier_summary,
+      empty_repos: emptyRepos,
+      unmapped_config_keys: unmapped,
+      config_map: configResolution,
       baselines,
     };
   } finally {

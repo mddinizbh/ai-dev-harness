@@ -12,16 +12,13 @@ import { compareRaw, makeL1EdgeId, assertL0FfEndpoints } from "../../explorer-l0
 import { contractKey } from "./path-normalize.mjs";
 
 /**
- * Default map: config env key → logical_repo that serves that base URL.
- * Extensible via stitch options.
+ * @deprecated Config maps are project data and now live per system namespace —
+ * see `config-map.mjs` and `config/<system-namespace>.config-map.json`.
+ * Re-exported here only so callers that never resolved a map keep the scoring
+ * they had before. `stitchL1` always passes an explicitly resolved map.
  */
-export const DEFAULT_CONFIG_TARGET_REPO = Object.freeze({
-  PROVIDERCONTROLLER_API_URL: "tax-provider-controller",
-  TAX_PROVIDER_RJ_URL: "tax-provider-rj",
-  TAX_PROVIDER_CONTROLLER_URL: "tax-provider-controller",
-  TAX_BASE_URL: "zul-tax",
-  TAX_PROVIDER_RJ_BASE_URL: "tax-provider-rj",
-});
+export { LEGACY_BUILTIN_CONFIG_MAP as DEFAULT_CONFIG_TARGET_REPO } from "./config-map.mjs";
+import { LEGACY_BUILTIN_CONFIG_MAP } from "./config-map.mjs";
 
 /**
  * @typedef {import("./frontier-extract.mjs").FrontierFact} FrontierFact
@@ -60,7 +57,7 @@ export function matchFrontiers(fromFacts, toFacts, options = {}) {
     throw new MatchError("fromFacts and toFacts must be arrays");
   }
   const configMap = {
-    ...DEFAULT_CONFIG_TARGET_REPO,
+    ...LEGACY_BUILTIN_CONFIG_MAP,
     ...(options.config_target_repo || {}),
   };
   const minScore = options.min_score ?? 0.5;

@@ -22,6 +22,9 @@ node skills/explorer-l1/cli.mjs stitch \
   --repos a=/path/a,b=/path/b \
   [--pair a->b] [--frontier-dir /path] [--dry-run] [--full]
 
+node skills/explorer-l1/cli.mjs frontier-report \
+  --namespace <ns> [--system-namespace <sys>] --repos a=/path/a,b=/path/b [--revision <sha>]
+
 node skills/explorer-l1/cli.mjs status --namespace <ns> --system-namespace <sys>
 node skills/explorer-l1/cli.mjs callers --namespace <ns> --system-namespace <sys> --repo <logical>
 node skills/explorer-l1/cli.mjs callees --namespace <ns> --system-namespace <sys> --repo <logical>
@@ -45,5 +48,27 @@ they are never guessed.
 Matcher order: **config_binding**, path contract, topic contract. Evidence
 class remains `contract-matched`. The additive trigger metadata is persisted in
 the existing `edge_json`; no SQLite migration is required.
+
+## Coverage, config map e extractores
+
+Zero fatos de fronteira num repo → `status: "blocked"`, exit 2, **nada
+persistido** (`--allow-empty-frontier` para forçar). Antes de acreditar num
+stitch vazio, rode `frontier-report`: ele mostra arquivos varridos vs ignorados,
+qual extractor reivindicou cada arquivo, fatos por tipo e um veredito `trust`.
+
+O config map (env de base-URL → logical_repo) é o que promove um edge de `0.55`
+(palpite por path) para `0.95` (evidência de configuração). Ele é dado de
+projeto, resolvido por system namespace, nesta ordem: built-ins legados →
+`config/<sys>.config-map.json` → `<dir-do-store>/config-maps/<sys>.json` →
+`--config-map-file` → `--config-map K=repo`. `stitch` e `frontier-report`
+imprimem `unmapped_config_keys` — as chaves que promoveriam edges se mapeadas.
+
+As regras JVM (Spring, Micronaut, `@Value`, YAML, cron) seguem inline em
+`src/frontier-extract.mjs`. Outras linguagens são adapters em `src/adapters/`,
+cada um declarando o que enxerga e **o que não enxerga** (`describes()`).
+Incluídos: `go-huma` (rotas `huma.Operation{}`), `route-manifest-yaml`
+(`nori.yaml` → rotas **de entrada** do próprio app) e `js-http-client`
+(clientes JS: `process.env.X_URL` + path literal → saída **com** config key).
+Adicionar linguagem = 1 arquivo + 1 linha no `src/adapters/index.mjs`.
 
 Install: `node skills/explorer-l1/install.mjs install`

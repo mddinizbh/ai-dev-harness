@@ -8,8 +8,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { resolveConfigMap, unmappedConfigKeys } from "./src/config-map.mjs";
 import { sanitizeErrorMessage } from "./src/errors.mjs";
-import { stitchL1 } from "./src/stitch.mjs";
+import { describeAdapters, inspectRepoFrontier } from "./src/frontier-extract.mjs";
+import { loadAcceptedBaselines, stitchL1 } from "./src/stitch.mjs";
 import {
   edgesForRepo,
   listSystemEdges,
@@ -52,7 +54,7 @@ export async function main(argv) {
   try {
     if (!argv.length) {
       throw new Error(
-        "usage: stitch | status | export-system | callers | callees",
+        "usage: stitch | frontier-report | status | export-system | callers | callees",
       );
     }
     const [cmd, ...rest] = argv;
@@ -86,12 +88,25 @@ export async function main(argv) {
           if (!from || !to) throw new Error("--pair must be from->to");
           pairs = [{ from, to }];
         }
+        const resolved = resolveConfigMap({
+          system_namespace: systemNs,
+          system_db: systemDb,
+          ...(typeof flags["config-map-file"] === "string"
+            ? { file: flags["config-map-file"] }
+            : {}),
+          ...(typeof flags["config-map"] === "string"
+            ? { inline: flags["config-map"] }
+            : {}),
+        });
         const result = stitchL1({
           l0_db: l0Db,
           system_db: systemDb,
           namespace,
           system_namespace: systemNs,
           repos,
+          config_target_repo: resolved.map,
+          config_map_resolution: { sources: resolved.sources, key_count: Object.keys(resolved.map).length },
+          allow_empty_frontier: flags["allow-empty-frontier"] === true,
           ...(pairs ? { pairs } : {}),
           ...(typeof flags["frontier-dir"] === "string"
             ? { frontier_dir: flags["frontier-dir"] }
@@ -111,8 +126,103 @@ export async function main(argv) {
                     : 0,
               };
         process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
-        return 0;
+        return typeof result.exit_code === "number" ? result.exit_code : 0;
       }
+
+      // Coverage of the frontier extraction itself: what was scanned, what was
+      // skipped, which extractor fired, what came out. Run this BEFORE trusting
+      // an empty stitch.
+      case "frontier-report": {
+        const namespace = req(flags, "namespace");
+        const l0Db =
+          typeof flags["l0-db"] === "string"
+            ? flags["l0-db"]
+            : defaultL0Db(namespace);
+        const repoSpec = req(flags, "repos");
+        const repos = repoSpec.split(",").map((part) => {
+          const [logical_repo, repo_path] = part.split("=");
+          if (!logical_repo || !repo_path) {
+            throw new Error(
+              `--repos entries must be logical_repo=/abs/path (got ${part})`,
+            );
+          }
+          return { logical_repo, repo_path };
+        });
+
+        // --revision short-circuits the baseline lookup on purpose: the most
+        // useful moment to run this report is BEFORE a repo has an accepted
+        // baseline, to find out whether it can be covered at all.
+        const pinned = typeof flags.revision === "string" ? flags.revision : null;
+        const revByRepo = pinned
+          ? Object.fromEntries(repos.map((r) => [r.logical_repo, pinned]))
+          : Object.fromEntries(
+              loadAcceptedBaselines(
+                l0Db,
+                namespace,
+                repos.map((r) => r.logical_repo),
+              ).map((b) => [b.logical_repo, b.source_revision]),
+            );
+
+        const frontiers = {};
+        const reports = repos.map((r) => {
+          const revision = revByRepo[r.logical_repo];
+          if (!revision) {
+            throw new Error(
+              `no accepted baseline for ${r.logical_repo}; accept an L0 baseline or pass --revision`,
+            );
+          }
+          const rep = inspectRepoFrontier({
+            repoPath: r.repo_path,
+            revision,
+            namespace,
+            logical_repo: r.logical_repo,
+          });
+          frontiers[r.logical_repo] = rep.facts;
+          const { facts, ...withoutFacts } = rep;
+          return withoutFacts;
+        });
+
+        const systemNs =
+          typeof flags["system-namespace"] === "string" ? flags["system-namespace"] : null;
+        let configBlock = null;
+        if (systemNs) {
+          const resolved = resolveConfigMap({
+            system_namespace: systemNs,
+            system_db: l0Db,
+            ...(typeof flags["config-map-file"] === "string"
+              ? { file: flags["config-map-file"] }
+              : {}),
+            ...(typeof flags["config-map"] === "string" ? { inline: flags["config-map"] } : {}),
+          });
+          configBlock = {
+            sources: resolved.sources,
+            key_count: Object.keys(resolved.map).length,
+            unmapped_config_keys: unmappedConfigKeys(frontiers, resolved.map),
+          };
+        }
+
+        const blind = reports.filter((r) => r.trust === "no-coverage").map((r) => r.logical_repo);
+        process.stdout.write(
+          `${JSON.stringify(
+            {
+              namespace,
+              ...(systemNs ? { system_namespace: systemNs } : {}),
+              repos: reports,
+              no_coverage: blind,
+              ...(configBlock ? { config_map: configBlock } : {}),
+              extractors: describeAdapters(),
+              verdict:
+                blind.length > 0
+                  ? "partial — a repo produced zero facts; an empty stitch would be a lie"
+                  : "ok — every repo produced frontier facts",
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        return blind.length > 0 ? 2 : 0;
+      }
+
       case "status": {
         const systemNs = req(flags, "system-namespace");
         const db =
