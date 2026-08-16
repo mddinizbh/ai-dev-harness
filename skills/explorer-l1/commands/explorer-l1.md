@@ -17,4 +17,6 @@ You own the runtime. Prefer:
 (aliases: `~/.agents/skills/l1`)
 
 Do not reindex with Graphify. Do not merge L0 namespaces. Edges are
-`contract-matched` only. After stitch, use callers/callees or `/explorer-query`.
+`contract-matched` only and may carry `http-sync`, `webhook`, `cron` or `queue`
+triggers. Treat them as a source-navigation skeleton; after stitch, use
+callers/callees or `/explorer-query` and read the referenced code.

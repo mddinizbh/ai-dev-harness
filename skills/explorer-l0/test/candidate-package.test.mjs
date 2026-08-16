@@ -65,10 +65,14 @@ describe("canonicalizeCandidatePackage", () => {
       }),
     );
 
-    assert.equal(pkg.records[0].id, "endpoint:get:/billing");
-    assert.equal(pkg.records[1].id, "service:billing");
-    assert.notEqual(pkg.records[1].id, "artifact_id:invented-by-llm");
-    assert.equal(pkg.relations[0].id, "exposes:service:billing->endpoint:get:/billing");
+    assert.equal(pkg.records[0].id, "l0:endpoint:get:/billing");
+    assert.equal(pkg.records[1].id, "l0:service:billing");
+    assert.notEqual(pkg.records[1].id, "l0:artifact_id:invented-by-llm");
+    // ADR 0009: relation id body carries canonical NATURAL KEYS, not record ids.
+    assert.equal(pkg.relations[0].id, "l0:rel:EXPOSES:billing->get:/billing");
+    // Endpoints continue to store full L0 record ids.
+    assert.equal(pkg.relations[0].from_record, "l0:service:billing");
+    assert.equal(pkg.relations[0].to_record, "l0:endpoint:get:/billing");
     assert.ok(!("confidence" in pkg.records[1]));
   });
 
@@ -108,7 +112,7 @@ describe("canonicalizeCandidatePackage", () => {
 
     assert.deepEqual(
       forward.records.map((r) => r.id),
-      ["service:billing", "service:orders"],
+      ["l0:service:billing", "l0:service:orders"],
     );
     assert.equal(forward.graph_index.canonical_graph_hash, reversed.graph_index.canonical_graph_hash);
     assert.equal(

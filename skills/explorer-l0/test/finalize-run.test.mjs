@@ -257,7 +257,7 @@ describe("finalizeRun — success path", () => {
     const store = openStore(dbPath);
     try {
       const rows = store._db
-        .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+        .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
         .get();
       assert.equal(rows.n, 1);
     } finally {
@@ -295,7 +295,7 @@ describe("finalizeRun — success path", () => {
     const store = openStore(dbPath);
     try {
       const rows = store._db
-        .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+        .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
         .get();
       assert.equal(rows.n, 1);
     } finally {
@@ -357,7 +357,7 @@ describe("finalizeRun — semantic blockers (exit 2, no DB write)", () => {
     const store = openStore(dbPath);
     try {
       const rows = store._db
-        .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+        .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
         .get();
       assert.equal(rows.n, 0, "no DB write on semantic blocker");
     } finally {
@@ -413,7 +413,7 @@ describe("finalizeRun — semantic blockers (exit 2, no DB write)", () => {
     const store = openStore(dbPath);
     try {
       const rows = store._db
-        .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+        .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
         .get();
       assert.equal(rows.n, 0);
     } finally {
@@ -466,7 +466,7 @@ describe("finalizeRun — semantic blockers (exit 2, no DB write)", () => {
     const store = openStore(dbPath);
     try {
       const rows = store._db
-        .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+        .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
         .get();
       assert.equal(rows.n, 0);
     } finally {
@@ -502,7 +502,7 @@ describe("finalizeRun — semantic blockers (exit 2, no DB write)", () => {
     const store = openStore(dbPath);
     try {
       const rows = store._db
-        .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+        .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
         .get();
       assert.equal(rows.n, 0);
     } finally {
@@ -540,7 +540,7 @@ describe("finalizeRun — mutation gate (post snapshot)", () => {
     const store = openStore(dbPath);
     try {
       const rows = store._db
-        .prepare(`SELECT COUNT(*) AS n FROM candidate_packages`)
+        .prepare(`SELECT COUNT(*) AS n FROM l0_candidate_packages`)
         .get();
       assert.equal(rows.n, 1);
     } finally {

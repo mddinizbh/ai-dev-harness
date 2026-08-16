@@ -73,7 +73,10 @@ Mapeamento local entre um repositório lógico e seu caminho real em cada Contex
 Porta de entrada usada pelos agentes para consultar a Context Layer. Recebe projeto, intenção e orçamento; aplica a Data Boundary Policy; recupera apenas evidências relevantes; e produz um Context Slice mínimo.
 
 ### Context Slice
-Subgrafo mínimo carregado por um agente em um momento da sessão. Pode conter scopes, jornadas, serviços, contratos ou código em diferentes níveis de detalhe. Agentes diferentes da mesma sessão podem receber Context Slices distintos.
+Subgrafo materializado de forma determinística a partir do Project Knowledge Graph aceito, sob uma política de traversal explícita e âncoras (seeds) normalizadas. O Slice é **completo relativamente ao grafo indexado**: contém todos os nós, arestas, misses e cobertura exigidos pela política, não um recorte mínimo. É dado derivado **content-addressed**: o `slice_hash` é SHA-256 sobre o payload canônico (seeds, baselines, nós, arestas, misses, cobertura, provenance), excluindo envelopes de auditoria (`audit.created_at`, `audit.updated_at`, `materialization_ms`) populados apenas pela camada de persistência. A mesma *derivation key* (seeds normalizadas + política + versões + hashes de baseline aceitos + opções) sempre produz o mesmo Slice. Orçamentos de tokens/nós/arestas **não** se aplicam aqui — eles pertencem ao *Context Pack*. Falta de indexação, dispatch não resolvido, âncoras incertas e fronteiras de política são emitidas explicitamente como *misses*; a completude é sempre relativa ao que está indexado. Contrato normativo: `skills/explorer-query/contracts/context-slice.schema.json`.
+
+### Context Pack
+Projeção **orçada** derivada de um Context Slice completo, pronta para consumo por um agente. É aqui — não no Slice — que orçamentos de tokens, nós e arestas aplicam-se: o Pack pode ser truncado (`truncated: true`) quando atinge o orçamento, mas ainda carrega as seeds normalizadas, o resumo da derivation key e contadores de cobertura do Slice de origem. Como o Slice, é content-addressed (`pack_id` = `pack:` + SHA-256 do payload canônico do Pack). Campos de relógio (`generated_at`, durações) vivem apenas em propriedades de envelope CLI não-hasheadas, nunca no payload canônico do Pack. O Context Gateway entrega um Pack (mínimo relativo ao orçamento solicitado) derivido de um Slice completo. Contrato normativo: `skills/explorer-query/contracts/context-pack.schema.json`.
 
 ---
 
@@ -114,7 +117,26 @@ Inventário versionado que lista cada Native Artifact da carga atual, com path r
 Índice canônico de uma carga Descobrir: listas ordenadas de IDs de Knowledge Records e Relations, contagens e `canonical_graph_hash` calculado sobre o conjunto canônico completo e estruturado de Records e Relations (incluindo evidence e status; excluindo metadados narrativos/observacionais). É a âncora da verificação de Repeatability.
 
 ### Canonical ID
-Identificador estável atribuído a um Knowledge Record ou Relation, único dentro do Knowledge Namespace. Exclui path de máquina e revisão, de modo que a identidade sobreviva a reindexações e migrações de ambiente. Records: `type:natural_key`. Relations: determinístico e type-prefixed a partir de `relation_type` + `from_record` + `to_record`. Dois registros com o mesmo Canonical ID no mesmo namespace representam o mesmo fato lógico.
+Identificador estável atribuído a um Knowledge Record ou Relation, único dentro do Knowledge Namespace. Exclui path de máquina e revisão, de modo que a identidade sobreviva a reindexações e migrações de ambiente. Dois registros com o mesmo Canonical ID no mesmo namespace representam o mesmo fato lógico.
+
+**id_version=2 (ADR 0009)** — todo novo ID carrega um prefixo de camada explícito e é produzido pelo módulo compartilhado `skills/explorer-l0/src/layered-id.mjs`. Veja a tabela **Layered ID decoder ring** abaixo para o mapeamento v1↔v2.
+
+### Layered ID decoder ring (ADR 0009)
+
+Toda nova identidade produzida pelo pipeline usa `ID_VERSION=2`. IDs legados sem prefixo de camada são reconhecidos como `id_version=1`; leitores v2 rejeitam mistura v1+v2 com `MixedVersionError`.
+
+| Camada | Identidade | v2 (atual) | v1 (legado, somente leitura) |
+| --- | --- | --- | --- |
+| L0 record | Knowledge Record | `l0:<record-kind>:<canonical-natural-key>` | `<type>:<natural_key>` |
+| L0 relation | Relation | `l0:rel:<RELATION_TYPE>:<from-natural-key>-><to-natural-key>` (natural keys no corpo) | `<type>:<from_record>-><to_record>` (record ids no corpo) |
+| L0 FrontierFact | FrontierFact | `l0:ff:<kind>:<16-hex-sha256>` | `ff:<kind>:<16-hex-sha256>` ou `ff:<short-kind>:<32-bit>:<line>` |
+| L1 edge | SystemEdge | `l1:edge:<32-hex-sha256>` | `l1:<32-hex-sha256>` |
+| L2 journey | JourneySpec id | `l2:journey:<journey-id>` | `<journey-id>` cru |
+| L2 bind | JourneyBind id | `l2:bind:<32-hex-sha256>` | `<ns>:<journeyId>:<journeyHash>` |
+| Slice | Context Slice id | `slice:<64-hex>` | `slice:<64-hex>` (formato estável; hash muda) |
+| Pack | Context Pack id | `pack:<64-hex>` | sem `pack_id` determinístico |
+
+Larguras de hash pré-existentes são **preservadas** (16 hex ff, 32 hex L1/L2, 64 hex Slice/Pack). `ID_VERSION` entra no material de cada hash, então mudar apenas a versão invalida todos os hashes downstream. Endpoints de Relation persistidos continuam armazenando o L0 record id completo (`l0:<kind>:*`); apenas o **corpo do ID** carrega natural keys. Endpoints L1 sempre referenciam `l0:ff:*`, nunca um L0 record id direto.
 
 ### Relation
 Vínculo tipado entre duas entidades no Project Knowledge Graph, persistido como registro **separado** (nunca embutido em KnowledgeRecord.attributes). Possui ID canônico type-prefixed, namespace (deve coincidir com o dos records conectados e com o da carga), tipo canônico, referências às entidades conectadas, status, source_revision e evidence. Persistência e Relations não cruzam namespaces.

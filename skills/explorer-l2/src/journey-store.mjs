@@ -1,13 +1,32 @@
 /**
  * SQLite store for L2 journey specs + bind results.
  * Shares the same DB file as L0/L1; does not modify L0 packages or L1 edges.
+ *
+ * ADR 0009 (id_version=2): bind_id is `l2:bind:<32-hex>` derived from the
+ * journey identity. specRevisionOf folds ID_VERSION into the spec hash so a
+ * version bump invalidates the spec revision too.
+ *
+ * ADR 0009 (Todo 8b): component-scoped schema versioning via
+ * `explorer_schema_versions(component='explorer-l2')`. Never the global
+ * `PRAGMA user_version`. Forward-only; opening a DB that records a future
+ * version throws `UnsupportedSchemaVersionError` before any write.
  */
 
-import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { stablePretty, stableStringify } from "../../explorer-l0/src/stable-json.mjs";
+import {
+  ID_VERSION,
+  makeL2BindId,
+  makeL2JourneyId,
+} from "../../explorer-l0/src/layered-id.mjs";
+import {
+  assertComponentSchemaVersionSupported,
+  migrateLayerTableNames,
+  migrateComponentSchema,
+  UnsupportedSchemaVersionError,
+} from "../../explorer-l0/src/schema-versions.mjs";
+import { stablePretty, stableStringify, sha256Text } from "../../explorer-l0/src/stable-json.mjs";
 
 export class JourneyStoreError extends Error {
   /**
@@ -20,8 +39,16 @@ export class JourneyStoreError extends Error {
   }
 }
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS journey_specs (
+/** Component key in the shared `explorer_schema_versions` table. */
+export const L2_COMPONENT = "explorer-l2";
+/** Highest L2 schema version this module produces. v2 = layered ids. */
+export const L2_SCHEMA_SUPPORTED_VERSION = 2;
+
+/** Re-export so callers can catch by type without knowing the source module. */
+export { UnsupportedSchemaVersionError };
+
+const SCHEMA_V1_DDL = `
+CREATE TABLE IF NOT EXISTS l2_journey_specs (
   system_namespace TEXT NOT NULL,
   journey_id TEXT NOT NULL,
   spec_revision TEXT NOT NULL,
@@ -30,7 +57,7 @@ CREATE TABLE IF NOT EXISTS journey_specs (
   PRIMARY KEY (system_namespace, journey_id, spec_revision)
 );
 
-CREATE TABLE IF NOT EXISTS journey_binds (
+CREATE TABLE IF NOT EXISTS l2_journey_binds (
   bind_id TEXT PRIMARY KEY,
   system_namespace TEXT NOT NULL,
   journey_id TEXT NOT NULL,
@@ -43,20 +70,20 @@ CREATE TABLE IF NOT EXISTS journey_binds (
   bind_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_journey_binds_ns_id
-  ON journey_binds(system_namespace, journey_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_l2_journey_binds_ns_id
+  ON l2_journey_binds(system_namespace, journey_id, created_at DESC);
 
-CREATE TABLE IF NOT EXISTS journey_step_edges (
+CREATE TABLE IF NOT EXISTS l2_journey_step_edges (
   bind_id TEXT NOT NULL,
   step_id TEXT NOT NULL,
   edge_id TEXT NOT NULL,
   step_status TEXT NOT NULL,
   PRIMARY KEY (bind_id, step_id, edge_id)
 );
-CREATE INDEX IF NOT EXISTS idx_journey_step_edges_edge
-  ON journey_step_edges(edge_id);
+CREATE INDEX IF NOT EXISTS idx_l2_journey_step_edges_edge
+  ON l2_journey_step_edges(edge_id);
 
-CREATE TABLE IF NOT EXISTS journey_current (
+CREATE TABLE IF NOT EXISTS l2_journey_current (
   system_namespace TEXT NOT NULL,
   journey_id TEXT NOT NULL,
   bind_id TEXT NOT NULL,
@@ -64,6 +91,19 @@ CREATE TABLE IF NOT EXISTS journey_current (
   PRIMARY KEY (system_namespace, journey_id)
 );
 `;
+
+/**
+ * v2 DDL: id_version column on l2_journey_binds so persisted rows carry the
+ * layered identity version. Forward-only; existing v1 rows keep default 1
+ * until they are re-derived (via slice-migrate rebuild phase).
+ */
+const SCHEMA_V2_DDL = `ALTER TABLE l2_journey_binds ADD COLUMN id_version INTEGER NOT NULL DEFAULT 1;`;
+
+/** @internal Step list used by migrateComponentSchema. */
+export const L2_MIGRATION_STEPS = [
+  { fromVersion: 0, ddl: SCHEMA_V1_DDL },
+  { fromVersion: 1, ddl: SCHEMA_V2_DDL },
+];
 
 /**
  * @param {string} dbPath
@@ -74,7 +114,24 @@ export function openJourneyStore(dbPath) {
   }
   mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(dbPath);
-  db.exec(SCHEMA);
+  try {
+    assertComponentSchemaVersionSupported(
+      db,
+      L2_COMPONENT,
+      L2_SCHEMA_SUPPORTED_VERSION,
+    );
+    migrateLayerTableNames(db, JourneyStoreError);
+    migrateComponentSchema({
+      db,
+      component: L2_COMPONENT,
+      supportedVersion: L2_SCHEMA_SUPPORTED_VERSION,
+      steps: L2_MIGRATION_STEPS,
+      errorCtor: JourneyStoreError,
+    });
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   try {
     chmodSync(dbPath, 0o600);
   } catch {
@@ -90,11 +147,13 @@ export function openJourneyStore(dbPath) {
 }
 
 /**
- * Content hash of the journey spec (stable JSON).
+ * Content hash of the journey spec (stable JSON). Folds ID_VERSION into the
+ * material so a version bump invalidates the spec revision.
  * @param {object} spec
  */
 export function specRevisionOf(spec) {
   const material = {
+    id_version: ID_VERSION,
     id: spec.id,
     system_namespace: spec.system_namespace,
     members: spec.members ?? [],
@@ -108,21 +167,36 @@ export function specRevisionOf(spec) {
       contract_key: s.contract_key ?? null,
       description: s.description ?? null,
     })),
+    read_plan: (spec.read_plan ?? []).map((item) => ({
+      id: item.id,
+      step_id: item.step_id,
+      repo: item.repo ?? null,
+      trigger: item.trigger ?? null,
+      reason: item.reason ?? null,
+      read_kind: item.read_kind ?? null,
+      file: item.file,
+      line: item.line ?? null,
+      symbol_id: item.symbol_id ?? null,
+      relation_type: item.relation_type ?? null,
+      status: item.status,
+    })),
   };
-  return createHash("sha256").update(stableStringify(material)).digest("hex").slice(0, 32);
+  return sha256Text(stableStringify(material)).slice(0, 32);
 }
 
 /**
+ * Bind id (id_version=2): `l2:bind:<32-hex>` derived from journey identity.
  * @param {string} systemNamespace
- * @param {string} journeyId
+ * @param {string} journeyId  raw spec id (without l2:journey: prefix)
  * @param {string} journeyHash
  */
 export function makeBindId(systemNamespace, journeyId, journeyHash) {
-  return `${systemNamespace}:${journeyId}:${journeyHash}`;
+  const material = `${systemNamespace}|${journeyId}|${journeyHash}`;
+  return makeL2BindId(material);
 }
 
 /**
- * Persist spec + bind result; upsert journey_current to this bind.
+ * Persist spec + bind result; upsert l2_journey_current to this bind.
  *
  * @param {ReturnType<typeof openJourneyStore>} store
  * @param {{
@@ -140,38 +214,42 @@ export function persistJourneyBind(store, input) {
   if (!bind?.journey_id || !bind.journey_hash || !bind.system_namespace) {
     throw new JourneyStoreError("bind.journey_id, journey_hash, system_namespace required");
   }
-  if (spec.id !== bind.journey_id) {
-    throw new JourneyStoreError("spec.id must match bind.journey_id");
+  // bind.journey_id is the prefixed v2 form (l2:journey:<spec.id>); compare
+  // against the prefixed spec.id so the invariant still holds (ADR 0009).
+  if (makeL2JourneyId(spec.id) !== bind.journey_id) {
+    throw new JourneyStoreError("bind.journey_id must be the v2 form of spec.id");
   }
   if (spec.system_namespace !== bind.system_namespace) {
     throw new JourneyStoreError("spec.system_namespace must match bind.system_namespace");
   }
 
   const specRevision = specRevisionOf(spec);
-  const bindId = makeBindId(bind.system_namespace, bind.journey_id, bind.journey_hash);
+  // Bind id derives from the RAW spec.id (not the prefixed journey_id) so the
+  // bind material is stable across read-back paths.
+  const bindId = makeBindId(bind.system_namespace, spec.id, bind.journey_hash);
   const now = new Date().toISOString();
   const setCurrent = input.set_current !== false;
 
   const insertSpec = store._db.prepare(`
-    INSERT OR IGNORE INTO journey_specs (
+    INSERT OR IGNORE INTO l2_journey_specs (
       system_namespace, journey_id, spec_revision, spec_json, created_at
     ) VALUES (?,?,?,?,?)
   `);
   const insertBind = store._db.prepare(`
-    INSERT OR IGNORE INTO journey_binds (
+    INSERT OR IGNORE INTO l2_journey_binds (
       bind_id, system_namespace, journey_id, spec_revision, journey_hash,
       status, steps_bound, steps_gap, members_json, bind_json, created_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
   `);
   const deleteSteps = store._db.prepare(
-    `DELETE FROM journey_step_edges WHERE bind_id = ?`,
+    `DELETE FROM l2_journey_step_edges WHERE bind_id = ?`,
   );
   const insertStep = store._db.prepare(`
-    INSERT INTO journey_step_edges (bind_id, step_id, edge_id, step_status)
+    INSERT INTO l2_journey_step_edges (bind_id, step_id, edge_id, step_status)
     VALUES (?,?,?,?)
   `);
   const upsertCurrent = store._db.prepare(`
-    INSERT INTO journey_current (system_namespace, journey_id, bind_id, updated_at)
+    INSERT INTO l2_journey_current (system_namespace, journey_id, bind_id, updated_at)
     VALUES (?,?,?,?)
     ON CONFLICT(system_namespace, journey_id) DO UPDATE SET
       bind_id = excluded.bind_id,
@@ -186,7 +264,9 @@ export function persistJourneyBind(store, input) {
   try {
     const specIns = insertSpec.run(
       spec.system_namespace,
-      spec.id,
+      // Store the prefixed v2 journey_id so all persisted rows share the
+      // canonical layer-prefixed identity (ADR 0009 grep guard).
+      bind.journey_id,
       specRevision,
       stablePretty(spec),
       now,
@@ -256,25 +336,45 @@ export function listJourneys(store, systemNamespace) {
     .prepare(
       `
       SELECT c.journey_id, c.bind_id, c.updated_at,
-             b.status, b.steps_bound, b.steps_gap, b.journey_hash, b.spec_revision, b.created_at
-      FROM journey_current c
-      JOIN journey_binds b ON b.bind_id = c.bind_id
+              b.status, b.steps_bound, b.steps_gap, b.journey_hash, b.spec_revision,
+              b.bind_json, b.created_at
+      FROM l2_journey_current c
+      JOIN l2_journey_binds b ON b.bind_id = c.bind_id
       WHERE c.system_namespace = ?
       ORDER BY c.journey_id ASC
     `,
     )
     .all(systemNamespace);
-  return rows.map((r) => ({
-    journey_id: r.journey_id,
-    bind_id: r.bind_id,
-    status: r.status,
-    steps_bound: r.steps_bound,
-    steps_gap: r.steps_gap,
-    journey_hash: r.journey_hash,
-    spec_revision: r.spec_revision,
-    bind_created_at: r.created_at,
-    current_updated_at: r.updated_at,
-  }));
+  return rows.map((r) => {
+    const bind = JSON.parse(r.bind_json);
+    return {
+      journey_id: r.journey_id,
+      bind_id: r.bind_id,
+      status: r.status,
+      structural_status: bind.structural_status || r.status,
+      understanding_status: bind.understanding_status || "unverified",
+      code_reads_total: bind.code_reads_total || 0,
+      code_reads_pending: bind.code_reads_pending || 0,
+      steps_bound: r.steps_bound,
+      steps_gap: r.steps_gap,
+      journey_hash: r.journey_hash,
+      spec_revision: r.spec_revision,
+      bind_created_at: r.created_at,
+      current_updated_at: r.updated_at,
+    };
+  });
+}
+
+/**
+ * Accept either the raw spec.id or the v2 prefixed `l2:journey:<id>` form
+ * when looking up journey rows. Returns the prefixed form for SQL params.
+ * @param {string} journeyId
+ */
+function normalizeJourneyIdLookup(journeyId) {
+  if (typeof journeyId !== "string" || journeyId === "") {
+    throw new JourneyStoreError("journey_id required");
+  }
+  return journeyId.startsWith("l2:journey:") ? journeyId : makeL2JourneyId(journeyId);
 }
 
 /**
@@ -285,32 +385,33 @@ export function showJourney(store, q) {
   if (!q.system_namespace || !q.journey_id) {
     throw new JourneyStoreError("system_namespace and journey_id required");
   }
+  const journeyId = normalizeJourneyIdLookup(q.journey_id);
   let bindId = q.bind_id;
   if (!bindId) {
     const cur = store._db
       .prepare(
-        `SELECT bind_id FROM journey_current
+        `SELECT bind_id FROM l2_journey_current
          WHERE system_namespace = ? AND journey_id = ?`,
       )
-      .get(q.system_namespace, q.journey_id);
+      .get(q.system_namespace, journeyId);
     bindId = cur?.bind_id;
   }
   if (!bindId) {
     return null;
   }
   const row = store._db
-    .prepare(`SELECT * FROM journey_binds WHERE bind_id = ?`)
+    .prepare(`SELECT * FROM l2_journey_binds WHERE bind_id = ?`)
     .get(bindId);
   if (!row) return null;
   const spec = store._db
     .prepare(
-      `SELECT spec_json FROM journey_specs
+      `SELECT spec_json FROM l2_journey_specs
        WHERE system_namespace = ? AND journey_id = ? AND spec_revision = ?`,
     )
     .get(row.system_namespace, row.journey_id, row.spec_revision);
   const steps = store._db
     .prepare(
-      `SELECT step_id, edge_id, step_status FROM journey_step_edges
+      `SELECT step_id, edge_id, step_status FROM l2_journey_step_edges
        WHERE bind_id = ? ORDER BY step_id, edge_id`,
     )
     .all(bindId);
@@ -341,11 +442,11 @@ export function journeysForEdge(store, q) {
   let sql = `
     SELECT se.step_id, se.edge_id, se.step_status,
            b.bind_id, b.journey_id, b.system_namespace, b.status,
-           b.steps_bound, b.steps_gap, b.journey_hash,
+            b.steps_bound, b.steps_gap, b.journey_hash, b.bind_json,
            CASE WHEN c.bind_id IS NOT NULL THEN 1 ELSE 0 END AS is_current
-    FROM journey_step_edges se
-    JOIN journey_binds b ON b.bind_id = se.bind_id
-    LEFT JOIN journey_current c
+    FROM l2_journey_step_edges se
+    JOIN l2_journey_binds b ON b.bind_id = se.bind_id
+    LEFT JOIN l2_journey_current c
       ON c.bind_id = b.bind_id
      AND c.system_namespace = b.system_namespace
      AND c.journey_id = b.journey_id
@@ -358,18 +459,24 @@ export function journeysForEdge(store, q) {
     params.push(q.system_namespace);
   }
   sql += ` ORDER BY is_current DESC, b.journey_id ASC`;
-  return store._db.prepare(sql).all(...params).map((r) => ({
-    journey_id: r.journey_id,
-    bind_id: r.bind_id,
-    system_namespace: r.system_namespace,
-    step_id: r.step_id,
-    edge_id: r.edge_id,
-    status: r.status,
-    steps_bound: r.steps_bound,
-    steps_gap: r.steps_gap,
-    journey_hash: r.journey_hash,
-    is_current: r.is_current === 1,
-  }));
+  return store._db.prepare(sql).all(...params).map((r) => {
+    const bind = JSON.parse(r.bind_json);
+    return {
+      journey_id: r.journey_id,
+      bind_id: r.bind_id,
+      system_namespace: r.system_namespace,
+      step_id: r.step_id,
+      edge_id: r.edge_id,
+      status: r.status,
+      structural_status: bind.structural_status || r.status,
+      understanding_status: bind.understanding_status || "unverified",
+      code_reads_pending: bind.code_reads_pending || 0,
+      steps_bound: r.steps_bound,
+      steps_gap: r.steps_gap,
+      journey_hash: r.journey_hash,
+      is_current: r.is_current === 1,
+    };
+  });
 }
 
 /**
@@ -379,17 +486,17 @@ export function journeysForEdge(store, q) {
 export function journeyStats(store, systemNamespace) {
   const specs = store._db
     .prepare(
-      `SELECT COUNT(*) AS n FROM journey_specs WHERE system_namespace = ?`,
+      `SELECT COUNT(*) AS n FROM l2_journey_specs WHERE system_namespace = ?`,
     )
     .get(systemNamespace);
   const binds = store._db
     .prepare(
-      `SELECT COUNT(*) AS n FROM journey_binds WHERE system_namespace = ?`,
+      `SELECT COUNT(*) AS n FROM l2_journey_binds WHERE system_namespace = ?`,
     )
     .get(systemNamespace);
   const current = store._db
     .prepare(
-      `SELECT COUNT(*) AS n FROM journey_current WHERE system_namespace = ?`,
+      `SELECT COUNT(*) AS n FROM l2_journey_current WHERE system_namespace = ?`,
     )
     .get(systemNamespace);
   return {

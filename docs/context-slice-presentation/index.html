@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context Slice · Descobrir</title>
+<link rel="icon" href="data:,">
+<script>
+(function () {
+  const saved = localStorage.getItem('theme');
+  const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.classList.toggle('dark', dark);
+})();
+</script>
+<style>
+:root {
+  --bg-0: #f7f8fa; --bg-1: #ffffff; --bg-2: #f1f2f5; --bg-3: #e7e9ee;
+  --border: #e2e4ea; --border-strong: #c6cbd4;
+  --text: #15171c; --text-2: #4d5360; --text-3: #7a808d;
+  --accent: #5444e0; --accent-soft: rgba(84,68,224,.12);
+  --observed: #1e9466; --observed-soft: rgba(30,148,102,.12);
+  --inferred: #b66e10; --inferred-soft: rgba(182,110,16,.12);
+  --missing: #d12d2d; --frontier: #46586e;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+html.dark {
+  --bg-0: #08090a; --bg-1: #0e1013; --bg-2: #16181d; --bg-3: #1d2026;
+  --border: #23262d; --border-strong: #393d46;
+  --text: #e6e8ec; --text-2: #9ba1ac; --text-3: #6b717f;
+  --accent: #7c6cff; --accent-soft: rgba(124,108,255,.16);
+  --observed: #3ecf8e; --observed-soft: rgba(62,207,142,.14);
+  --inferred: #e8a33d; --inferred-soft: rgba(232,163,61,.14);
+  --missing: #ff5c5c; --frontier: #6f8196;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg-0); color: var(--text-2); font-family: var(--sans);
+  -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; overflow: hidden;
+}
+.bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid var(--border); flex: none;
+}
+.bar h1 { font-weight: 600; font-size: 17px; color: var(--text); letter-spacing: -.01em; }
+.bar .sub { font-family: var(--mono); font-size: 10px; color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; }
+.spacer { flex: 1; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
+  padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; color: var(--text-3); cursor: pointer; transition: all .12s ease;
+}
+.chip:hover { color: var(--text); border-color: var(--border-strong); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#themeToggle {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; color: var(--text-3); cursor: pointer;
+}
+#themeToggle:hover { color: var(--text); border-color: var(--border-strong); }
+.stage { flex: 1; position: relative; min-height: 0; background: var(--bg-1); }
+.stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+.stage svg.on { display: block; }
+.zone rect { fill: var(--bg-2); stroke: var(--border); stroke-width: 1; rx: 10; }
+.zone .ztitle { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; fill: var(--text-3); }
+.node { cursor: pointer; }
+.node rect { fill: var(--bg-2); stroke: var(--border); stroke-width: 1.5; rx: 8; transition: stroke .12s ease, fill .12s ease; }
+.node:hover rect { stroke: var(--border-strong); }
+.node.sel rect { stroke: var(--accent) !important; stroke-width: 2; }
+.node .t { font-family: var(--sans); font-size: 13px; font-weight: 600; fill: var(--text); pointer-events: none; }
+.node .m { font-family: var(--mono); font-size: 10px; fill: var(--text-3); pointer-events: none; }
+.node .k { font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; fill: var(--accent); pointer-events: none; }
+.node.frontier rect { stroke: var(--frontier); stroke-dasharray: 5 3; }
+.node.store rect { fill: var(--bg-3); }
+.edge { stroke: var(--border-strong); stroke-width: 1.6; fill: none; marker-end: url(#a-mut); transition: opacity .15s ease, stroke .15s ease; }
+.edge.obs { stroke: var(--observed); marker-end: url(#a-obs); }
+.edge.mis { stroke: var(--missing); stroke-dasharray: 6 4; marker-end: url(#a-mis); }
+.edge.fro { stroke: var(--frontier); stroke-dasharray: 5 3; marker-end: url(#a-fro); }
+.edge.lit { stroke: var(--accent); stroke-width: 2.2; marker-end: url(#a-acc); stroke-dasharray: 8 5; animation: march .85s linear infinite; }
+.elbl { font-family: var(--mono); font-size: 10px; fill: var(--text-3); }
+.stage.flowing .edge { opacity: .12; }
+.stage.flowing .elbl { opacity: .12; }
+.stage.flowing .node { opacity: .28; }
+.stage.flowing .zone { opacity: .4; }
+.stage.flowing .edge.lit, .stage.flowing .elbl.lit, .stage.flowing .node.lit { opacity: 1; }
+.stage.flowing .node.lit rect { stroke: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .stage.flowing .edge.lit { animation: none; } }
+@keyframes march { to { stroke-dashoffset: -13; } }
+.card {
+  position: absolute; max-width: 380px; background: var(--bg-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 13px 15px; box-shadow: 0 4px 18px rgba(0,0,0,.06);
+}
+#detail { right: 16px; bottom: 24px; width: 360px; }
+#detail h3 { font-weight: 600; font-size: 15px; color: var(--text); margin-bottom: 2px; }
+#detail .meta { font-family: var(--mono); font-size: 10px; color: var(--text-3); margin-bottom: 7px; }
+#detail p { font-size: 12px; line-height: 1.5; color: var(--text-2); }
+#caption { left: 16px; bottom: 24px; max-width: 520px; }
+#caption .scene { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+#caption p { font-size: 12.5px; line-height: 1.5; }
+.src { position: absolute; top: 10px; right: 16px; font-family: var(--mono); font-size: 9px; color: var(--text-3); opacity: .6; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <div>
+    <h1>Context Slice · Descobrir</h1>
+    <div class="sub">grafo determinístico · L0→L1→L2 · cache · entrega</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip on" data-scene="tudo">Tudo</button>
+    <button class="chip" data-scene="exemplo">Exemplo MVC</button>
+    <button class="chip" data-scene="grafo">O que é grafo</button>
+    <button class="chip" data-scene="l0">L0</button>
+    <button class="chip" data-scene="sqlite">SQLite</button>
+    <button class="chip" data-scene="l1">L1</button>
+    <button class="chip" data-scene="l2">L2</button>
+    <button class="chip" data-scene="slice">Context Slice</button>
+    <button class="chip" data-scene="entrega">Entrega</button>
+  </div>
+  <button id="themeToggle">Tema</button>
+</div>
+
+<div class="stage" id="stage">
+  <!-- PIPELINE SVG -->
+  <svg id="svgPipeline" class="on" viewBox="0 0 1560 820" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Pipeline Context Slice">
+    <defs>
+      <marker id="a-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--border-strong)"/>
+      </marker>
+      <marker id="a-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--accent)"/>
+      </marker>
+      <marker id="a-obs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--observed)"/>
+      </marker>
+      <marker id="a-mis" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--missing)"/>
+      </marker>
+      <marker id="a-fro" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--frontier)"/>
+      </marker>
+    </defs>
+
+    <!-- ZONES -->
+    <g class="zone"><rect x="40" y="100" width="440" height="340"/><text class="ztitle" x="54" y="122">Código-fonte (exemplo)</text></g>
+    <g class="zone"><rect x="520" y="100" width="640" height="340"/><text class="ztitle" x="534" y="122">Pipeline de indexação</text></g>
+    <g class="zone"><rect x="80" y="440" width="1400" height="200"/><text class="ztitle" x="94" y="462">Camadas do grafo (L0→L1→L2→Slice→Pack)</text></g>
+
+    <!-- EXAMPLE NODES (left cluster) -->
+    <g class="node" data-k="controller"><rect x="60" y="140" width="190" height="55"/><text class="t" x="74" y="165">ClienteController</text><text class="m" x="74" y="182">buscar(id)</text></g>
+    <g class="node" data-k="service"><rect x="60" y="215" width="190" height="55"/><text class="t" x="74" y="240">ClienteService</text><text class="m" x="74" y="257">buscar(id) + Address</text></g>
+    <g class="node" data-k="repo"><rect x="60" y="290" width="190" height="55"/><text class="t" x="74" y="315">ClienteRepository</text><text class="m" x="74" y="332">findById(id)</text></g>
+    <g class="node frontier" data-k="db"><rect x="60" y="365" width="190" height="55"/><text class="t" x="74" y="390">DB</text><text class="m" x="74" y="407">PostgreSQL · frontier</text></g>
+    <g class="node frontier" data-k="address"><rect x="270" y="215" width="190" height="55"/><text class="t" x="284" y="240">Address API</text><text class="m" x="284" y="257">GET /api/addresses/{cep}</text></g>
+
+    <!-- PIPELINE NODES -->
+    <g class="node" data-k="graphify"><rect x="520" y="140" width="160" height="150"/><text class="t" x="534" y="168">Graphify</text><text class="m" x="534" y="188">AST → grafo estrutural</text><text class="m" x="534" y="204">nodes + edges</text><text class="k" x="534" y="230">decompõe código</text></g>
+    <g class="node" data-k="explorer"><rect x="720" y="140" width="160" height="150"/><text class="t" x="734" y="168">Explorer</text><text class="m" x="734" y="188">valida + emite</text><text class="m" x="734" y="204">records · relations</text><text class="k" x="734" y="230">evidence</text></g>
+    <g class="node" data-k="gate"><rect x="920" y="140" width="180" height="150"/><text class="t" x="934" y="168">Finalize</text><text class="m" x="934" y="188">candidate + Human Gate</text><text class="k" x="934" y="230">aceite explícito</text></g>
+
+    <!-- EDGES (example cluster) -->
+    <path class="edge obs" id="e-ctrl-svc" d="M155,195 V215"/><text class="elbl" data-e="e-ctrl-svc" x="162" y="210">buscar(id)</text>
+    <path class="edge obs" id="e-svc-repo" d="M155,270 V290"/><text class="elbl" data-e="e-svc-repo" x="162" y="285">findById(id)</text>
+    <path class="edge obs fro" id="e-repo-db" d="M155,345 V365"/><text class="elbl" data-e="e-repo-db" x="162" y="360">SQL</text>
+    <path class="edge obs fro" id="e-svc-addr" d="M250,242 H270"/><text class="elbl" data-e="e-svc-addr" x="255" y="225">/addresses/{cep}</text>
+
+    <!-- PIPELINE EDGES -->
+    <path class="edge" id="e-code-graph" d="M460,320 Q500,280 520,215"/><text class="elbl" data-e="e-code-graph" x="475" y="275">decompõe → grafo</text>
+    <path class="edge" id="e-graph-expl" d="M680,215 H720"/><text class="elbl" data-e="e-graph-expl" x="685" y="208">grafo estrutural</text>
+    <path class="edge" id="e-expl-gate" d="M880,215 H920"/><text class="elbl" data-e="e-expl-gate" x="885" y="208">records + evidence</text>
+    <path class="edge obs" id="e-gate-sqlite" d="M1010,215 Q1080,280 1160,440"/><text class="elbl" data-e="e-gate-sqlite" x="1030" y="310">accept → persist baseline</text>
+
+    <!-- BOTTOM LAYER NODES -->
+    <g class="node store" data-k="sqlite"><rect x="80" y="440" width="260" height="180"/><text class="t" x="94" y="468">SQLite · L0</text><text class="m" x="94" y="488">records · relations · evidence</text><text class="m" x="94" y="504">frontier · graph islands</text><text class="k" x="94" y="530">determinístico</text></g>
+    <g class="node" data-k="l1"><rect x="400" y="460" width="220" height="140"/><text class="t" x="414" y="488">L1</text><text class="m" x="414" y="508">cross-service edges</text><text class="k" x="414" y="534">stitch</text></g>
+    <g class="node" data-k="l2"><rect x="680" y="460" width="220" height="140"/><text class="t" x="694" y="488">L2</text><text class="m" x="694" y="508">journey bind</text><text class="k" x="694" y="534">JourneySpec</text></g>
+    <g class="node" data-k="slice"><rect x="960" y="460" width="240" height="140"/><text class="t" x="974" y="488">Context Slice</text><text class="m" x="974" y="508">derivation key → sha256</text><text class="k" x="974" y="534">determinístico</text></g>
+    <g class="node store" data-k="pack"><rect x="1260" y="460" width="260" height="140"/><text class="t" x="1274" y="488">Context Pack</text><text class="m" x="1274" y="508">projeção orçada</text><text class="k" x="1274" y="534">budget · evidence</text></g>
+
+    <!-- LAYER EDGES -->
+    <path class="edge obs" id="e-l0-l1" d="M340,530 H400"/><text class="elbl" data-e="e-l0-l1" x="345" y="523">L0 → L1</text>
+    <path class="edge" id="e-l1-l2" d="M620,530 H680"/><text class="elbl" data-e="e-l1-l2" x="625" y="523">L1 → L2</text>
+    <path class="edge" id="e-l2-slice" d="M900,530 H960"/><text class="elbl" data-e="e-l2-slice" x="905" y="523">L2 → Slice</text>
+    <path class="edge obs" id="e-slice-pack" d="M1200,530 H1260"/><text class="elbl" data-e="e-slice-pack" x="1205" y="523">Slice → Pack</text>
+
+    <text class="src">docs/context-slice-presentation · exemplo didático fictício</text>
+
+    <div class="card" id="caption">
+      <div class="scene" id="cap-scene">TUDO</div>
+      <p id="cap-body">Do código-fonte ao Context Pack — o caminho determinístico que transforma um repo em contexto confiável para agentes e humanos.</p>
+    </div>
+
+    <div class="card" id="detail">
+      <h3 id="d-title">Clique em qualquer nó</h3>
+      <div class="meta" id="d-meta">detalhe do nó</div>
+      <p id="d-body">Os chips acima trocam a cena e destacam o fluxo relevante. Clique em nós para ver o que cada componente produz ou consome.</p>
+    </div>
+  </svg>
+
+  <!-- SLICE SVG (centerpiece) -->
+  <svg id="svgSlice" viewBox="0 0 1560 760" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Context Slice derivation e cache">
+    <defs>
+      <marker id="a-mut2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--border-strong)"/>
+      </marker>
+      <marker id="a-acc2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--accent)"/>
+      </marker>
+      <marker id="a-obs2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--observed)"/>
+      </marker>
+      <marker id="a-mis2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" style="fill: var(--missing)"/>
+      </marker>
+    </defs>
+
+    <!-- DERIVATION KEY -->
+    <g class="zone"><rect x="40" y="80" width="340" height="340"/><text class="ztitle" x="54" y="102">Derivation Key</text></g>
+    <g class="node" data-k="key"><rect x="60" y="120" width="300" height="280"/><text class="t" x="74" y="145">Derivation Key</text>
+      <text class="m" x="74" y="170">engine / schema</text>
+      <text class="m" x="74" y="188">policy</text>
+      <text class="m" x="74" y="206">seeds</text>
+      <text class="m" x="74" y="224">L0 hashes</text>
+      <text class="m" x="74" y="242">L1 edge_set_hash</text>
+      <text class="m" x="74" y="260">L2 bindings</text>
+      <text class="k" x="74" y="295">→ sha256 → slice_id</text>
+    </g>
+    <g class="node" data-k="sha"><rect x="430" y="200" width="130" height="80"/><text class="t" x="444" y="230">sha256</text><text class="m" x="444" y="248">determinístico</text></g>
+    <g class="node store" data-k="sliceid"><rect x="600" y="200" width="260" height="80"/><text class="t" x="614" y="230">slice_id</text><text class="m" x="614" y="248">7c6cff...a4f2</text></g>
+
+    <!-- STORE + BRANCHES -->
+    <g class="node store" data-k="store"><rect x="920" y="80" width="240" height="130"/><text class="t" x="934" y="108">Slice Store</text><text class="m" x="934" y="128">persistente · determinístico</text><text class="k" x="934" y="152">cache hit / miss</text></g>
+    <g class="node" data-k="miss"><rect x="860" y="280" width="110" height="70"/><text class="t" x="874" y="310">MISS</text><text class="k" x="874" y="328">materialize</text></g>
+    <g class="node" data-k="hit"><rect x="1010" y="280" width="110" height="70"/><text class="t" x="1024" y="310">HIT</text><text class="k" x="1024" y="328">reuse</text></g>
+
+    <!-- PATHS -->
+    <g class="node" data-k="materialize"><rect x="720" y="420" width="220" height="80"/><text class="t" x="734" y="448">materialize</text><text class="m" x="734" y="466">L0 + L1 + L2</text></g>
+    <g class="node" data-k="persist"><rect x="970" y="420" width="180" height="80"/><text class="t" x="984" y="448">persist</text><text class="m" x="984" y="466">novo slice</text></g>
+    <g class="node" data-k="reuse"><rect x="1180" y="280" width="180" height="70"/><text class="t" x="1194" y="310">reuse</text><text class="m" x="1194" y="328">instantâneo</text></g>
+
+    <!-- DELIVERY -->
+    <g class="node store" data-k="pack2"><rect x="1180" y="420" width="340" height="130"/><text class="t" x="1194" y="448">Context Pack</text><text class="m" x="1194" y="468">projeção orçada</text><text class="m" x="1194" y="486">evidence + pointers</text><text class="k" x="1194" y="512">budget · agent-ready</text></g>
+    <g class="node" data-k="agent"><rect x="1180" y="590" width="340" height="80"/><text class="t" x="1194" y="618">Agent · Human</text><text class="m" x="1194" y="636">recebe o pack</text></g>
+
+    <!-- INVALIDATION -->
+    <g class="node frontier" data-k="changed"><rect x="40" y="480" width="340" height="130"/><text class="t" x="54" y="508">source changed</text><text class="m" x="54" y="528">hash drift (L0/L1/L2)</text><text class="k" x="54" y="554">novo código → nova chave</text></g>
+
+    <!-- EDGES SLICE -->
+    <path class="edge" id="se-key-sha" d="M360,260 H430"/><text class="elbl" data-e="se-key-sha" x="365" y="253">campos → hash</text>
+    <path class="edge obs" id="se-sha-id" d="M560,240 H600"/><text class="elbl" data-e="se-sha-id" x="565" y="233">sha256</text>
+    <path class="edge" id="se-id-store" d="M860,240 Q900,160 920,145"/><text class="elbl" data-e="se-id-store" x="865" y="175">lookup slice_id</text>
+    <path class="edge mis" id="se-store-miss" d="M970,210 V280"/><text class="elbl" data-e="se-store-miss" x="978" y="250">MISS</text>
+    <path class="edge obs" id="se-store-hit" d="M1110,210 V280"/><text class="elbl" data-e="se-store-hit" x="1118" y="250">HIT</text>
+    <path class="edge mis" id="se-miss-mat" d="M915,350 Q830,400 830,420"/><text class="elbl" data-e="se-miss-mat" x="820" y="385">materialize</text>
+    <path class="edge mis" id="se-mat-persist" d="M940,460 H970"/><text class="elbl" data-e="se-mat-persist" x="945" y="453">persist</text>
+    <path class="edge obs" id="se-persist-pack" d="M1150,460 H1180"/><text class="elbl" data-e="se-persist-pack" x="1155" y="453">pack</text>
+    <path class="edge obs" id="se-hit-reuse" d="M1120,315 H1180"/><text class="elbl" data-e="se-hit-reuse" x="1125" y="308">reuse</text>
+    <path class="edge obs" id="se-reuse-pack" d="M1270,350 V420"/><text class="elbl" data-e="se-reuse-pack" x="1278" y="385">pack</text>
+    <path class="edge obs" id="se-pack-agent" d="M1350,550 V590"/><text class="elbl" data-e="se-pack-agent" x="1358" y="575">entrega</text>
+    <path class="edge mis" id="se-changed-key" d="M210,480 V420"/><text class="elbl" data-e="se-changed-key" x="218" y="455">nova chave</text>
+
+    <text class="src">Context Slice é a unidade determinística de contexto</text>
+  </svg>
+</div>
+
+<script>
+const SCENES = {
+  tudo: {
+    svg: 'pipeline', dim: false,
+    lit: { nodes: [], edges: [] },
+    cap: 'Do código-fonte ao Context Pack — o caminho determinístico que transforma um repo em contexto confiável para agentes e humanos.'
+  },
+  exemplo: {
+    svg: 'pipeline', dim: true,
+    lit: { nodes: ['controller','service','repo','db','address'], edges: ['e-ctrl-svc','e-svc-repo','e-repo-db','e-svc-addr'] },
+    cap: 'ClienteController → ClienteService.buscar(id) → ClienteRepository.findById(id) → DB. O Explorer também captura a chamada externa a Address API.'
+  },
+  grafo: {
+    svg: 'pipeline', dim: true,
+    lit: { nodes: ['controller','service','repo','address'], edges: ['e-ctrl-svc','e-svc-repo','e-svc-addr'] },
+    cap: 'Um grafo é nodes + edges. Aqui: 4 nós (Controller, Service, Repository, Address API) e 4 arestas de chamada. O Project Knowledge Graph é esse grafo, indexado.'
+  },
+  l0: {
+    svg: 'pipeline', dim: true,
+    lit: { nodes: ['graphify','explorer','gate','sqlite'], edges: ['e-code-graph','e-graph-expl','e-expl-gate','e-gate-sqlite'] },
+    cap: 'Graphify decompõe cada arquivo em grafo estrutural (AST→nodes/edges). O Explorer valida, emite records semânticos, relations e evidence. Finalize + Human Gate aceita o baseline.'
+  },
+  sqlite: {
+    svg: 'pipeline', dim: true,
+    lit: { nodes: ['sqlite'], edges: ['e-gate-sqlite'] },
+    cap: 'O baseline aceito (L0) vive num SQLite local — records, relations, evidence, frontier. Determinístico: mesmo código + mesma engine = mesmo grafo.'
+  },
+  l1: {
+    svg: 'pipeline', dim: true,
+    lit: { nodes: ['l1','address'], edges: ['e-svc-addr','e-l0-l1'] },
+    cap: 'L1 adiciona só as arestas cross-service (chamadas entre sistemas). No exemplo: ClienteService → Address API vira uma edge de fronteira entre o app e o serviço externo.'
+  },
+  l2: {
+    svg: 'pipeline', dim: true,
+    lit: { nodes: ['l2','service','repo','db'], edges: ['e-l1-l2','e-l2-slice'] },
+    cap: 'L2 binds uma JourneySpec de negócio ao grafo (L0+L1). A jornada "buscar cliente" ancora em ClienteController e traça o caminho até o DB e a Address API, marcando gaps.'
+  },
+  slice: {
+    svg: 'slice', dim: true,
+    lit: { nodes: ['key','sha','sliceid','store','miss','materialize','persist','pack2'], edges: ['se-key-sha','se-sha-id','se-id-store','se-store-miss','se-miss-mat','se-mat-persist','se-persist-pack'] },
+    cap: 'O Slice é determinístico: derivation key [engine/schema, policy, seeds, L0 hashes, L1 edge_set_hash, L2 bindings] → sha256 → slice_id. MISS → materializa e persiste; HIT → reusa; fonte mudou → chave nova.'
+  },
+  entrega: {
+    svg: 'slice', dim: true,
+    lit: { nodes: ['store','hit','reuse','pack2','agent'], edges: ['se-store-hit','se-hit-reuse','se-reuse-pack','se-pack-agent'] },
+    cap: 'O Context Pack é a projeção orçada do Slice — só o que cabe no budget do agente, com evidence e pointers para o código. É o que o agente/humano recebe.'
+  }
+};
+
+const DETAIL = {
+  controller: { t: 'ClienteController', m: 'código-fonte · entrypoint', b: 'Recebe a requisição e delega para o Service. É o nó inicial do exemplo MVC.' },
+  service: { t: 'ClienteService', m: 'lógica de domínio', b: 'Orquestra a busca do cliente e, quando necessário, chama a Address API externa para enriquecer o endereço.' },
+  repo: { t: 'ClienteRepository', m: 'acesso a dados', b: 'Encapsula a consulta findById(id) no banco. É a fronteira entre o domínio e a persistência.' },
+  db: { t: 'DB (PostgreSQL)', m: 'frontier · fonte de verdade', b: 'Armazena os dados do cliente. É uma fronteira observada (edge observada) no grafo.' },
+  address: { t: 'Address API', m: 'frontier · serviço externo', b: 'GET /api/addresses/{cep}. Chamada cross-service capturada como edge de fronteira no L1.' },
+  graphify: { t: 'Graphify', m: 'engine 0.9.32', b: 'Decompõe cada arquivo em um grafo estrutural (AST → nodes/edges). É o primeiro passo do pipeline de indexação.' },
+  explorer: { t: 'Explorer', m: 'validação + emissão', b: 'Valida o grafo estrutural, emite records semânticos, relations e evidence. Gera o candidate para o Human Gate.' },
+  gate: { t: 'Finalize + Human Gate', m: 'aceite explícito', b: 'O baseline candidate só é persistido após aceite humano explícito. Nunca auto-accept.' },
+  sqlite: { t: 'SQLite · L0', m: 'store determinístico', b: 'Persiste o baseline aceito: records, relations, evidence, frontier e graph islands. Determinístico por construção.' },
+  l1: { t: 'L1', m: 'cross-service edges', b: 'Stitch de arestas entre sistemas. Apenas edges cross-service são adicionadas aqui.' },
+  l2: { t: 'L2', m: 'journey bind', b: 'Binda uma JourneySpec de negócio ao grafo L0+L1. Marca gaps e incertezas explicitamente.' },
+  slice: { t: 'Context Slice', m: 'unidade determinística', b: 'Derivation key → sha256 → slice_id. É a unidade de cache e entrega.' },
+  pack: { t: 'Context Pack', m: 'projeção orçada', b: 'Entrega ao agente/humano apenas o que cabe no budget, com evidence e pointers para o código.' },
+  key: { t: 'Derivation Key', m: '6 campos determinísticos', b: 'engine/schema, policy, seeds, L0 hashes, L1 edge_set_hash, L2 bindings. Qualquer mudança gera nova chave.' },
+  sha: { t: 'sha256', m: 'função de hash', b: 'Transforma a derivation key em um identificador estável e determinístico.' },
+  sliceid: { t: 'slice_id', m: 'identificador de cache', b: 'Exemplo: 7c6cff...a4f2. Chave estável para hit/miss no store.' },
+  store: { t: 'Slice Store', m: 'persistente', b: 'Armazena slices por slice_id. Fonte de MISS/HIT.' },
+  miss: { t: 'MISS', m: 'cache miss', b: 'Slice não existe ou está inválido. Dispara materialize.' },
+  hit: { t: 'HIT', m: 'cache hit', b: 'Slice válido encontrado. Reuso instantâneo.' },
+  materialize: { t: 'materialize', m: 'construção do slice', b: 'Agrega L0 + L1 + L2 conforme a derivation key e produz o pack.' },
+  persist: { t: 'persist', m: 'escrita no store', b: 'Grava o novo slice no store para futuros hits.' },
+  reuse: { t: 'reuse', m: 'entrega imediata', b: 'Retorna o pack já materializado sem recomputar.' },
+  pack2: { t: 'Context Pack', m: 'entrega final', b: 'Projeção orçada com evidence e pointers. O que o agente/humano realmente recebe.' },
+  agent: { t: 'Agent · Human', m: 'consumidor', b: 'Recebe o Context Pack e opera com contexto verificável e orçado.' },
+  changed: { t: 'source changed', m: 'invalidação', b: 'Drift de hash em L0/L1/L2. Gera nova derivation key e novo slice_id.' }
+};
+
+const stage = document.getElementById('stage');
+const chips = document.querySelectorAll('.chip');
+const svgPipeline = document.getElementById('svgPipeline');
+const svgSlice = document.getElementById('svgSlice');
+const captionScene = document.getElementById('cap-scene');
+const captionBody = document.getElementById('cap-body');
+
+function setScene(key) {
+  const s = SCENES[key];
+  if (!s) return;
+  chips.forEach(c => c.classList.toggle('on', c.dataset.scene === key));
+
+  const showPipeline = s.svg === 'pipeline';
+  svgPipeline.classList.toggle('on', showPipeline);
+  svgSlice.classList.toggle('on', !showPipeline);
+
+  stage.classList.toggle('flowing', s.dim);
+
+  // clear previous lit
+  document.querySelectorAll('.edge').forEach(e => e.classList.remove('lit'));
+  document.querySelectorAll('.elbl').forEach(l => l.classList.remove('lit'));
+  document.querySelectorAll('.node').forEach(n => n.classList.remove('lit'));
+
+  // apply lit
+  s.lit.nodes.forEach(k => {
+    document.querySelectorAll(`.node[data-k="${k}"]`).forEach(n => n.classList.add('lit'));
+  });
+  s.lit.edges.forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.classList.add('lit');
+    document.querySelectorAll(`.elbl[data-e="${id}"]`).forEach(l => l.classList.add('lit'));
+  });
+
+  captionScene.textContent = key.toUpperCase();
+  captionBody.textContent = s.cap;
+}
+
+chips.forEach(c => c.addEventListener('click', () => setScene(c.dataset.scene)));
+
+document.querySelectorAll('.node').forEach(n => n.addEventListener('click', () => {
+  document.querySelectorAll('.node').forEach(x => x.classList.remove('sel'));
+  n.classList.add('sel');
+  const d = DETAIL[n.dataset.k];
+  if (!d) return;
+  document.getElementById('d-title').textContent = d.t;
+  document.getElementById('d-meta').textContent = d.m;
+  document.getElementById('d-body').innerHTML = d.b;
+}));
+
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const dark = !document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+});
+
+// initial scene
+setScene('tudo');
+</script>
+</body>
+</html>

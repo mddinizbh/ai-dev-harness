@@ -1,10 +1,15 @@
 /**
  * Bind a JourneySpec against system edges (fixture or live).
  * Does not invent edges — reports gaps.
+ *
+ * ADR 0009 (id_version=2): journey_id is exposed as `l2:journey:<spec.id>`
+ * and journey_hash includes ID_VERSION in its material so a version bump
+ * invalidates every journey/bind hash downstream.
  */
 
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { ID_VERSION, makeL2JourneyId } from "../../explorer-l0/src/layered-id.mjs";
+import { sha256Text, stableStringify } from "../../explorer-l0/src/stable-json.mjs";
 
 /**
  * @typedef {{
@@ -19,6 +24,13 @@ import { createHash } from "node:crypto";
  *     contract_prefix?: string,
  *     contract_key?: string,
  *     description?: string,
+ *   }[],
+ *   read_plan?: {
+ *     id: string,
+ *     step_id: string,
+ *     file: string,
+ *     line?: number,
+ *     status: "pending" | "verified",
  *   }[],
  * }} JourneySpec
  */
@@ -52,6 +64,7 @@ export function bindJourney(spec, edges) {
       gaps.push({
         step_id: step.id,
         reason: "no_matching_edge",
+        gap_class: "structural",
         trigger: step.trigger,
         from: step.from,
         to: step.to,
@@ -77,21 +90,42 @@ export function bindJourney(spec, edges) {
           score: e.score,
           from: e.from?.logical_repo,
           to: e.to?.logical_repo,
+          trigger: e.trigger || step.trigger,
+          interaction: e.interaction,
+          schedule: e.schedule,
+          pipeline_id: e.pipeline_id,
         })),
       });
     }
   }
 
-  const material = JSON.stringify({
+  const readPlan = Array.isArray(spec.read_plan) ? spec.read_plan : [];
+  const material = stableStringify({
+    id_version: ID_VERSION,
     id: spec.id,
     system_namespace: spec.system_namespace,
     bound,
     gaps,
+    read_plan: readPlan.map((item) => ({
+      id: item.id,
+      step_id: item.step_id,
+      file: item.file,
+      line: item.line ?? null,
+      status: item.status,
+    })),
   });
-  const journey_hash = createHash("sha256").update(material).digest("hex").slice(0, 32);
+  const journey_hash = sha256Text(material).slice(0, 32);
+  const codeReadsPending = readPlan.filter((item) => item.status !== "verified").length;
+  const structuralStatus = gaps.length === 0 ? "complete" : "partial";
+  const understandingStatus =
+    readPlan.length === 0
+      ? "unverified"
+      : codeReadsPending > 0
+        ? "code-read-required"
+        : "confirmed";
 
   return {
-    journey_id: spec.id,
+    journey_id: makeL2JourneyId(spec.id),
     system_namespace: spec.system_namespace,
     journey_hash,
     members: spec.members || [],
@@ -99,7 +133,11 @@ export function bindJourney(spec, edges) {
     steps_gap: gaps.length,
     bound,
     gaps,
-    status: gaps.length === 0 ? "complete" : "partial",
+    status: structuralStatus,
+    structural_status: structuralStatus,
+    understanding_status: understandingStatus,
+    code_reads_total: readPlan.length,
+    code_reads_pending: codeReadsPending,
   };
 }
 

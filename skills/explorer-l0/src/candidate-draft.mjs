@@ -124,13 +124,15 @@ export function canonicalizeRelation(draft, namespace, sourceRevision, sourceEng
   assertEvidenceResolves(draft.evidence, manifest, "relation");
 
   // from_record / to_record / id are never authority — always natural keys.
+  // Per ADR 0009: relation ID body carries canonical NATURAL KEYS only,
+  // while the persisted from_record/to_record fields carry full L0 record ids.
   const fromType = requireNonEmptyString(draft.from_type, "relation.from_type");
   const fromKey = requireNonEmptyString(draft.from_natural_key, "relation.from_natural_key");
   const toType = requireNonEmptyString(draft.to_type, "relation.to_type");
   const toKey = requireNonEmptyString(draft.to_natural_key, "relation.to_natural_key");
   const fromRecord = canonicalRecordId(fromType, fromKey);
   const toRecord = canonicalRecordId(toType, toKey);
-  const id = canonicalRelationId(relationType, fromRecord, toRecord);
+  const id = canonicalRelationId(relationType, fromKey, toKey);
   const relation = {
     id,
     namespace,

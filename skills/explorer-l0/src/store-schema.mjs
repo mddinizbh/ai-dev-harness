@@ -1,7 +1,7 @@
 /** SQL DDL for the Descobrir document store. */
 
 export const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS candidate_packages (
+CREATE TABLE IF NOT EXISTS l0_candidate_packages (
   candidate_id TEXT PRIMARY KEY,
   namespace TEXT NOT NULL,
   logical_repo TEXT NOT NULL,
@@ -12,17 +12,17 @@ CREATE TABLE IF NOT EXISTS candidate_packages (
   UNIQUE (namespace, logical_repo, source_revision, canonical_graph_hash)
 );
 
-CREATE TABLE IF NOT EXISTS accepted_baselines (
+CREATE TABLE IF NOT EXISTS l0_accepted_baselines (
   namespace TEXT NOT NULL,
   logical_repo TEXT NOT NULL,
-  candidate_id TEXT NOT NULL REFERENCES candidate_packages(candidate_id),
+  candidate_id TEXT NOT NULL REFERENCES l0_candidate_packages(candidate_id),
   approver TEXT NOT NULL,
   accepted_at TEXT NOT NULL,
   PRIMARY KEY (namespace, logical_repo)
 );
 
-CREATE INDEX IF NOT EXISTS idx_candidates_ns_repo
-  ON candidate_packages (namespace, logical_repo);
+CREATE INDEX IF NOT EXISTS idx_l0_candidates_ns_repo
+  ON l0_candidate_packages (namespace, logical_repo);
 `;
 
 /**

@@ -67,6 +67,7 @@ export function synthesizeJourney(input) {
       enriched.spec.enrichment?.claims_blocked_until_body_read ||
       enriched.spec.pipeline?.claims_blocked_until_body_read ||
       [],
+    read_plan: enriched.spec.read_plan || [],
     spec: enriched.spec,
     bind,
   };

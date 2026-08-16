@@ -53,7 +53,7 @@ export function toAcceptanceError(err) {
 export function existingCandidateOrCollision(db, pkg, incomingJson) {
   const existing = db
     .prepare(
-      `SELECT candidate_id, package_json FROM candidate_packages
+      `SELECT candidate_id, package_json FROM l0_candidate_packages
        WHERE namespace = ? AND logical_repo = ? AND source_revision = ? AND canonical_graph_hash = ?`,
     )
     .get(pkg.namespace, pkg.logical_repo, pkg.source_revision, pkg.graph_index.canonical_graph_hash);

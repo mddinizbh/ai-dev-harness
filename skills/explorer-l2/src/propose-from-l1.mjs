@@ -56,12 +56,13 @@ export function proposeFromL1(edges, opts) {
   for (const e of list) {
     const from = e.from?.logical_repo || "unknown";
     const to = e.to?.logical_repo || "unknown";
+    const trigger = triggerOfEdge(e);
     let gkey;
     if (groupBy === "edge") {
       gkey = e.edge_id || `${from}->${to}:${e.contract_key}`;
     } else {
       const prefix = contractPrefix(e.method, e.path || e.contract_key);
-      gkey = `${from}->${to}::${prefix}`;
+      gkey = `${from}->${to}::${trigger}::${prefix}`;
     }
     if (!groups.has(gkey)) groups.set(gkey, []);
     groups.get(gkey).push(e);
@@ -76,6 +77,7 @@ export function proposeFromL1(edges, opts) {
     const to = head.to?.logical_repo;
     const prefix = contractPrefix(head.method, head.path || head.contract_key);
     const pathHint = pathTopic(head.path || head.contract_key);
+    const trigger = triggerOfEdge(head);
     const scores = groupEdges.map((e) => e.score ?? 0);
     const minS = Math.min(...scores);
     const maxS = Math.max(...scores);
@@ -89,7 +91,7 @@ export function proposeFromL1(edges, opts) {
     steps.push({
       id: stepId,
       title,
-      trigger: "http-sync",
+      trigger,
       from,
       to,
       contract_prefix: prefix,
@@ -112,6 +114,16 @@ export function proposeFromL1(edges, opts) {
           ...new Set(groupEdges.map((e) => e.match_kind).filter(Boolean)),
         ],
         config_keys: cfg,
+        trigger,
+        interactions: [
+          ...new Set(groupEdges.map((e) => e.interaction).filter(Boolean)),
+        ],
+        schedules: [
+          ...new Set(groupEdges.map((e) => e.schedule).filter(Boolean)),
+        ],
+        pipeline_ids: [
+          ...new Set(groupEdges.map((e) => e.pipeline_id).filter(Boolean)),
+        ],
         evidence: flattenEvidence(groupEdges),
       },
     });
@@ -162,6 +174,14 @@ export function proposeFromL1(edges, opts) {
       members: spec.members,
     },
   };
+}
+
+/** @param {object} edge */
+function triggerOfEdge(edge) {
+  if (edge?.trigger) return edge.trigger;
+  if (edge?.interaction === "topic") return "queue";
+  if (edge?.interaction === "webhook") return "webhook";
+  return "http-sync";
 }
 
 /**

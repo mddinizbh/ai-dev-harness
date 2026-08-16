@@ -12,9 +12,9 @@ description: >
 ## Pipeline (obrigatório)
 
 ```text
-L1 system_edges  →  propose-from-l1  →  draft (só hops HTTP)
-L0 accepted pkgs →  enrich-from-l0   →  anchors + hotspot warnings
-                 →  bind (+ persist) →  bound/gap no SQLite
+L1 system_edges  →  propose-from-l1  →  skeleton tipado por trigger
+L0 accepted pkgs →  enrich-from-l0   →  anchors + continuidade internal + read_plan
+                 →  bind (+ persist) →  structural_status + understanding_status
 ```
 
 **Não** escrever JourneySpec de domínio na mão e “carimbar” com bind.
@@ -42,7 +42,7 @@ node skills/explorer-l2/cli.mjs propose-from-l1 \
   --system-namespace estapar-system --from zul-tax --to tax-provider-controller \
   --min-score 0.9 --out /tmp/draft.json
 
-# 2) âncoras L0 + warnings (body_read_required)
+# 2) âncoras L0 + read_plan obrigatório
 node skills/explorer-l2/cli.mjs enrich-from-l0 \
   --spec /tmp/draft.json --namespace estapar --out /tmp/enriched.json
 
@@ -62,9 +62,23 @@ node skills/explorer-l2/cli.mjs journeys-for-edge --edge-id 'l1:…'
 
 | Pode | Não pode |
 |------|----------|
-| Step HTTP a partir de edge L1 | Claim “default RENDIMENTO” sem body de `choosePartner` |
+| Steps `http-sync`, `webhook`, `cron` e `queue` a partir de edge L1 | Claim “default RENDIMENTO” sem body de `choosePartner` |
+| Continuidade `internal` a partir de relações L0 comprovadas | Inventar ordem de negócio só porque dois símbolos são vizinhos |
 | L0 anchors Method/Service no evidence file | Tratar enrich como verdade de domínio |
-| Warning `body_read_required` | Journey complete inventada top-down |
+| `read_plan` com arquivo, linha, símbolo e motivo | Tratar `structural_status=complete` como entendimento confirmado |
 
-Human gate: revisar hotspots no código; só então aceitar narrativa de domínio
-(em journey human-edited) ou confiar no skeleton L1+L0 para impact de hop.
+## Dois estados, duas perguntas
+
+- `structural_status`: todos os hops possuem contrato L1 correspondente?
+- `understanding_status`: os itens obrigatórios do `read_plan` já foram lidos e
+  marcados como `verified`?
+
+O campo legado `status` continua espelhando `structural_status` para
+compatibilidade. Uma jornada pode ser estruturalmente `complete` e continuar
+com `understanding_status=code-read-required`. Alterar um item de leitura para
+`verified` muda a revisão e o hash da jornada. Os campos são aditivos em
+`spec_json`/`bind_json`; não exigem migração SQLite.
+
+Human gate: executar o `read_plan`, revisar os bodies e registrar `verified`;
+só então aceitar narrativa de domínio. O skeleton L1+L0 continua válido para
+navegação e blast radius antes dessa confirmação.
